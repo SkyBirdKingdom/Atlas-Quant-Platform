@@ -16,7 +16,7 @@ class Trade(Base):
     
     delivery_start = Column(DateTime, index=True)
     delivery_end = Column(DateTime, index=True)
-    trade_time = Column(DateTime)
+    trade_time = Column(DateTime, index=True)
     
     duration_minutes = Column(Float)
     contract_type = Column(String, index=True)
@@ -40,7 +40,7 @@ class MarketCandle(Base):
     timestamp = Column(DateTime, primary_key=True, index=True) # K线开始时间 (UTC)
     
     # 维度信息
-    area = Column(String, index=True) # SE3, SE1...
+    area = Column(String, primary_key=True, index=True) # SE3, SE1...
     contract_type = Column(String)    # PH/QH
     
     # OHLCV 数据

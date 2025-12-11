@@ -3,20 +3,19 @@ from pydantic import BaseModel
 from typing import List
 from sqlalchemy.orm import Session
 from .database import get_db, Base, engine
-from .services import fetcher, analyzer, stats, backtest, market_data, kline_generator # 导入刚才写的服务
+from .services import fetcher, analyzer, stats, backtest, market_data, kline_generator, feature_engine, live_runner # 导入刚才写的服务
 from fastapi.middleware.cors import CORSMiddleware # 引入 CORS
 import uuid
 from contextlib import asynccontextmanager
 from . import scheduler
 from .models import FetchState
-from .strategy.engine import BacktestEngine
-from .strategy.strategies import NaiveStrategy, LiquidityRiskStrategy
 from sqlalchemy import text
 import pandas as pd
 from .core.logger import setup_logging
 import os
 from .utils.time_helper import get_trading_window
 from datetime import timezone
+from typing import Dict, Any
 
 # --- 生命周期管理 ---
 @asynccontextmanager
@@ -57,18 +56,22 @@ class BacktestRequest(BaseModel):
     start_date: str
     end_date: str
     area: str = "SE3"
-    ph_threshold: float = 40
-    qh_threshold: float = 10
-    base_pos: float = 5.0
-    reduced_pos: float = 2.0
+    strategy_name: str = "RsiMacd"
+    params: Dict[str, Any] = {}
 
 class MarketDataRequest(BaseModel):
     start_date: str
     end_date: str
     area: str = "SE3"
     freq: str = "1h" # 1h, 1d
+  
+class FeatureDebugRequest(BaseModel):
+    area: str = "SE3"
+    start_date: str
+    end_date: str
 
 task_status = {}
+backtest_tasks = {}
 
 @app.post("/api/market/kline")
 def get_kline_data(req: MarketDataRequest, db: Session = Depends(get_db)):
@@ -76,96 +79,66 @@ def get_kline_data(req: MarketDataRequest, db: Session = Depends(get_db)):
     return {"status": "success", "data": data}
 
 @app.post("/api/backtest/run")
-def run_strategy_backtest(req: BacktestRequest, db: Session = Depends(get_db)):
-    # 1. 准备数据 (保持不变)
-    start_date = req.start_date
-    if len(req.end_date) == 10: end_date = f"{req.end_date} 23:59:59"
-    else: end_date = req.end_date
+def run_strategy_backtest_async(req: BacktestRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """
+    【异步回测接口】提交回测任务，立即返回 Task ID
+    """
+    task_id = str(uuid.uuid4())
+    backtest_tasks[task_id] = {"status": "running", "progress": 0, "message": "初始化中..."}
+    
+    # 将任务放入后台运行
+    background_tasks.add_task(backtest_worker, task_id, req.dict())
+    
+    return {"status": "success", "task_id": task_id}
 
-    query = text("""
-        SELECT 
-            delivery_start as time,
-            contract_type as type,
-            sum(volume) as volume,
-            avg(price) as price,
-            stddev(price) as std_price,
-            max(price) as max_price,
-            min(price) as min_price
-        FROM trades
-        WHERE delivery_area = :area 
-          AND delivery_start >= :start 
-          AND delivery_start <= :end 
-        GROUP BY 1, 2
-        ORDER BY 1
-    """)
-    rows = db.execute(query, {"area": req.area, "start": start_date, "end": end_date}).fetchall()
-    
-    if not rows:
-        return {"status": "empty", "data": {}}
-        
-    df = pd.DataFrame(rows)
-    df['volume'] = df['volume'].fillna(0)
-    df['std_price'] = df['std_price'].fillna(0)
-    df['max_price'] = df['max_price'].fillna(df['price'])
-    df['min_price'] = df['min_price'].fillna(df['price'])
+# 3. 新增查询回测状态的接口
+@app.get("/api/backtest/status/{task_id}")
+def get_backtest_status(task_id: str):
+    task = backtest_tasks.get(task_id)
+    if not task:
+        return {"status": "not_found"}
+    return task
 
-    # 2. 运行 笨策略 (Benchmark)
-    engine_naive = BacktestEngine(df)
-    res_naive = engine_naive.run(NaiveStrategy, base_pos=req.base_pos)
-    
-    # 3. 运行 智能策略 (Smart)
-    engine_smart = BacktestEngine(df)
-    res_smart = engine_smart.run(
-        LiquidityRiskStrategy, 
-        base_pos=req.base_pos,
-        reduced_pos=req.reduced_pos,
-        ph_threshold=req.ph_threshold,
-        qh_threshold=req.qh_threshold
-    )
-    
-    # --- 4. 关键修改：合并时包含 'slippage_cost' ---
-    # 我们需要 'cum_slippage' 画曲线，需要 'slippage_cost' 画柱状图
-    merged = pd.merge(
-        res_naive[['time', 'cum_slippage', 'slippage_cost']], 
-        res_smart[['time', 'cum_slippage', 'position', 'slippage_cost']], 
-        on='time', 
-        suffixes=('_naive', '_smart')
-    )
-    
-    # 计算累计节省
-    merged['saved_cumulative'] = merged['cum_slippage_naive'] - merged['cum_slippage_smart']
-    
-    # --- 5. 统计汇总 ---
-    total_naive = res_naive['slippage_cost'].sum()
-    total_smart = res_smart['slippage_cost'].sum()
-    
-    summary = {
-        "total_naive_cost": round(total_naive, 2),
-        "total_smart_cost": round(total_smart, 2),
-        "total_saved": round(total_naive - total_smart, 2),
-        "roi_improvement": round((total_naive - total_smart)/total_naive * 100, 2) if total_naive>0 else 0,
-        "downgrade_count": int(len(res_smart[res_smart['position'] < req.base_pos]))
-    }
-    
-    # --- 6. 关键修改：计算单次节省并填充 ---
-    chart_data = []
-    for _, r in merged.iterrows():
-        # 单次节省 = 笨策略当次成本 - 智能策略当次成本
-        instant_saved = r['slippage_cost_naive'] - r['slippage_cost_smart']
+# 4. 后台工作函数 (Worker)
+def backtest_worker(task_id: str, req_data: dict):
+    # 手动创建 DB Session，因为 BackgroundTasks 无法复用 Depends 的 Session
+    from .database import SessionLocal
+    db = SessionLocal()
+    try:
+        backtest_tasks[task_id]["message"] = "正在加载数据..."
         
-        chart_data.append({
-            "time": r['time'].strftime('%Y-%m-%d %H:%M'),
-            "cumulative": round(r['saved_cumulative'], 2),
-            "saved": round(instant_saved, 2) # <--- 这里原来是 0，现在修复了
+        # 调用回测服务
+        # 注意：我们需要修改 services/backtest.py 让它支持进度汇报（可选），目前先直接跑
+        result = backtest.run_strategy_backtest(
+            db, 
+            req_data['start_date'], 
+            req_data['end_date'], 
+            req_data['area'], 
+            req_data['strategy_name'], 
+            **req_data['params']
+        )
+        
+        if result['status'] == 'success':
+            backtest_tasks[task_id].update({
+                "status": "completed", 
+                "data": result['data'],
+                "message": "回测完成"
+            })
+        else:
+            backtest_tasks[task_id].update({
+                "status": "failed", 
+                "message": result.get('msg', '未知错误')
+            })
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        backtest_tasks[task_id].update({
+            "status": "failed", 
+            "message": f"系统错误: {str(e)}"
         })
-
-    return {
-        "status": "success", 
-        "data": {
-            "summary": summary,
-            "chart": chart_data
-        }
-    }
+    finally:
+        db.close()
 
 # --- API 1: 获取数据日历 ---
 @app.get("/api/data-availability")
@@ -343,12 +316,13 @@ def get_daily_contracts(date: str, area: str, db: Session = Depends(get_db)):
     return res
 
 # 2. 获取指定合约的 K 线数据
-@app.get("/api/market/candles/{contract_id}")
-def get_contract_candles(contract_id: str, db: Session = Depends(get_db)):
+@app.get("/api/market/candles/{area}/{contract_id}")
+def get_contract_candles(area: str, contract_id: str, db: Session = Depends(get_db)):
     from .models import MarketCandle
     
     candles = db.query(MarketCandle).filter(
-        MarketCandle.contract_id == contract_id
+        MarketCandle.contract_id == contract_id,
+        MarketCandle.area == area
     ).order_by(MarketCandle.timestamp).all()
     
     data = []
@@ -394,3 +368,49 @@ def get_raw_trades_for_debug(area: str, contract_id: str, db: Session = Depends(
             "area": r.delivery_area
         })
     return data
+
+@app.post("/api/debug/features")
+def debug_market_features(req: FeatureDebugRequest, db: Session = Depends(get_db)):
+    """
+    【调试接口】查看 Feature Engine 计算出的技术指标
+    """
+    try:
+        # 调用我们刚写的 feature_engine
+        df = feature_engine.get_market_features(db, req.area, req.start_date, req.end_date)
+        
+        if df.empty:
+            return {"status": "empty", "msg": "该时间段无数据，请检查 K 线生成任务是否已运行"}
+        
+        # 截取最后 20 行展示
+        tail_df = df.tail(20).reset_index()
+        
+        # 格式化时间戳
+        records = tail_df.to_dict(orient='records')
+        for r in records:
+            if r.get('timestamp'):
+                r['timestamp'] = r['timestamp'].strftime('%Y-%m-%d %H:%M')
+            
+        return {
+            "status": "success",
+            "feature_columns": list(df.columns), # 让你确认列名是否正确
+            "data_count": len(df),
+            "sample_data": records
+        }
+    except Exception as e:
+        # 打印详细堆栈以便调试
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/market/check-signal/{area}")
+def check_signal_manual(area: str, db: Session = Depends(get_db)):
+    """
+    手动触发一次实盘信号检查
+    """
+    try:
+        result = live_runner.run_live_analysis(db, area)
+        return {"status": "success", "data": result}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "detail": str(e)}

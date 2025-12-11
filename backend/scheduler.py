@@ -2,7 +2,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.orm import Session
 from .database import SessionLocal
-from .services import fetcher, kline_generator
+from .services import fetcher, kline_generator, live_runner
 import logging
 from datetime import datetime, timedelta, timezone
 from .models import MarketCandle
@@ -35,7 +35,11 @@ def get_last_kline_time(db, area):
                     .first()
     
     if last_record:
-        return last_record[0]
+        ts = last_record[0]
+        # 【关键修复】如果读出来的时间没有时区信息 (Naive)，给它强行加上 UTC
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts
     else:
         # 如果数据库是空的，给一个默认的起始时间，2024-12-31 23:59:00 UTC
         return datetime(2024, 12, 31, 23, 59, 0, tzinfo=timezone.utc)
@@ -82,6 +86,20 @@ def kline_job_function():
                 # 移动指针
                 current_pointer = batch_end
                 db.commit() # 每一批次提交一次，防止长事务
+            
+            # --- 阶段二：实盘信号分析 (新增) ---
+            try:
+                # 只有当数据是“新鲜”的（比如最近1小时内有数据），才跑分析
+                # 防止补录一年前数据时疯狂报警
+                latest_check = get_last_kline_time(db, area)
+                if latest_check > target_end_dt - timedelta(hours=2):
+                    result = live_runner.run_live_analysis(db, area)
+                    
+                    if result and result['signal'] != "NEUTRAL":
+                        logger.info(f"🚀🚀🚀 [{area}] 触发重磅信号: {result['signal']} | RSI: {result['rsi']:.2f}")
+                        # TODO: 这里是未来接 Telegram 报警的地方
+            except Exception as e:
+                logger.error(f"[{area}] 信号分析失败: {e}")
 
     except Exception as e:
         logger.error(f"Kline Gen Job Error: {e}")

@@ -3,7 +3,7 @@ import axios from 'axios';
 // 创建 axios 实例，指向你的 FastAPI 地址
 const api = axios.create({
   baseURL: 'http://127.0.0.1:8000/api', // 你的后端地址
-  timeout: 60000 // 60秒超时，因为抓取数据可能很慢
+  timeout: 300000 // 300秒超时，因为抓取数据可能很慢
 });
 
 // 1. 触发后台抓取任务
@@ -36,10 +36,12 @@ export const getContracts = (date, area) =>
   api.get(`/market/contracts?date=${date}&area=${area}`);
 
 // 获取 K 线数据
-export const getCandles = (contractId) => 
-  api.get(`/market/candles/${contractId}`);
+export const getCandles = (area, contractId) => 
+  api.get(`/market/candles/${area}/${contractId}`);
 
 export const getTradesbyContract = (area, contractId) => 
   api.get(`/debug/trades/${area}/${contractId}`);
+
+export const getBacktestStatus = (taskId) => api.get(`/backtest/status/${taskId}`);
 
 export default api;

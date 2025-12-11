@@ -86,7 +86,7 @@ def generate_1min_candles_chunk(db: Session, area: str, chunk_start: datetime, c
             batch = candles[i : i + batch_size]
             stmt = insert(MarketCandle).values(batch)
             stmt = stmt.on_conflict_do_update(
-                index_elements=['contract_id', 'timestamp'],
+                index_elements=['contract_id', 'timestamp', 'area'],
                 set_={
                     "open": stmt.excluded.open,
                     "high": stmt.excluded.high,
@@ -125,8 +125,16 @@ def generate_1min_candles(db: Session, area: str, start_date: str, end_date: str
     while current < end_dt:
         chunk_end = min(current + timedelta(days=1), end_dt)
         
-        logger.info(f"... 处理切片: {current} -> {chunk_end}")
+        logger.info(f"⏳ 处理切片: {current.strftime('%Y-%m-%d %H:%M')} -> {chunk_end.strftime('%H:%M')} ...")
+        # 记录一下开始时间，用于计算耗时
+        t0 = datetime.now()
+
         count = generate_1min_candles_chunk(db, area, current, chunk_end)
+
+        cost = (datetime.now() - t0).total_seconds()
+        # 【新增】打印耗时和生成数量
+        logger.info(f"   ✅ 切片完成: 生成 {count} 条 K线 (耗时 {cost:.2f}s)")
+        
         total_generated += count
         
         current = chunk_end

@@ -1,116 +1,200 @@
+# backend/services/backtest.py
 import pandas as pd
 import numpy as np
+import logging
+import math
 from sqlalchemy.orm import Session
-from ..models import Trade
+from sqlalchemy import text
+from ..strategy.engine import BacktestEngine
+from ..strategy.strategies import DynamicConfigStrategy
+from . import feature_engine
+from ..utils.time_helper import get_trading_window
+from datetime import timedelta
 
-def run_backtest(db: Session, start_date: str, end_date: str, area: str, 
-                 ph_threshold: float, qh_threshold: float, 
-                 base_pos: float = 5.0, reduced_pos: float = 2.0):
-    """
-    回测逻辑：
-    比较 "始终持有 base_pos" vs "智能切换 base/reduced pos" 的成本差异
-    """
-    # 1. 获取数据 (复用之前的逻辑，或是简化版查询)
-    # 我们需要按时间聚合的数据，包含 total_vol, std_price, max/min price
-    # 这里为了性能，直接写 SQL 聚合
-    from sqlalchemy import text
+logger = logging.getLogger("Backtest")
+
+def safe_float(value, default=0.0):
+    try:
+        if value is None: return default
+        f_val = float(value)
+        if math.isnan(f_val) or math.isinf(f_val): return default
+        return f_val
+    except: return default
+
+def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str, 
+                          strategy_name: str = "DynamicConfig", **kwargs):
     
-    # 构造结束时间 (包含全天)
-    if len(end_date) == 10: end_date = f"{end_date} 23:59:59"
-
+    if 'T' not in start_date: start_date += " 00:00:00"
+    if 'T' not in end_date: end_date += " 23:59:59"
+    
+    # 1. 提取参数
+    force_close_minutes = kwargs.pop('force_close_minutes', 0)
+    enable_slippage = kwargs.pop('enable_slippage', False)
+    
     query = text("""
-        SELECT 
-            delivery_start,
-            contract_type,
-            sum(volume) as total_vol,
-            stddev(price) as std_price,
-            max(price) as max_price,
-            min(price) as min_price,
-            avg(price) as avg_price
+        SELECT DISTINCT contract_id, contract_type, delivery_start
         FROM trades
         WHERE delivery_area = :area 
           AND delivery_start >= :start 
-          AND delivery_start <= :end 
-        GROUP BY 1, 2
-        ORDER BY 1
+          AND delivery_start <= :end
+        ORDER BY delivery_start
     """)
+    contracts = db.execute(query, {"area": area, "start": start_date, "end": end_date}).fetchall()
     
-    rows = db.execute(query, {"area": area, "start": start_date, "end": end_date}).fetchall()
+    if not contracts:
+        return {"status": "empty", "msg": "该时间段无合约数据"}
+
+    StrategyClass = {
+        "DynamicConfig": DynamicConfigStrategy, # 新策略
+    }.get(strategy_name, DynamicConfigStrategy)
+
+    contract_results = [] # 存放每个合约的汇总结果
     
-    if not rows:
-        return {"summary": {}, "chart": []}
+    # 2. 遍历合约
+    for index, c_row in enumerate(contracts):
+        cid = c_row.contract_id
 
-    df = pd.DataFrame(rows)
-    df.columns = ['time', 'type', 'total_vol', 'std_price', 'max_price', 'min_price', 'avg_price']
-    df['total_vol'] = df['total_vol'].fillna(0)
-    df['std_price'] = df['std_price'].fillna(0)
-    df['max_price'] = df['max_price'].fillna(df['avg_price'])
-    df['min_price'] = df['min_price'].fillna(df['avg_price'])
+        delivery_start = c_row.delivery_start
+        duration_min = 60 if c_row.contract_type == 'PH' else 15
+        delivery_end = delivery_start + timedelta(minutes=duration_min)
+        
+        # 计算收盘时间 (Delivery - 1h)
+        # 注意：这里需要精准计算，用于传给 Engine 做强平判断
+        open_ts, close_ts = get_trading_window(delivery_start)
+        # 将带时区的时间转为 naive UTC 以匹配 dataframe (如果 df 是 naive 的)
+        open_ts_naive = open_ts.replace(tzinfo=None)
+        close_ts_naive = close_ts.replace(tzinfo=None)
 
-    # --- 2. 模拟交易 ---
-    results = []
-    cumulative_saved = 0.0
-    
-    # 电力滑点公式 (复用 analyzer.py 的逻辑)
-    def calculate_cost(row, position):
-        if row['total_vol'] == 0: return position * 50.0 # 极刑惩罚
+        df = feature_engine.get_contract_features(db, cid, area)
+        if df.empty: continue
+            
+        # 初始化引擎 (传入 close_ts 和 buffer)
+        engine = BacktestEngine(df, close_ts_naive, force_close_minutes, enable_slippage)
+        engine.run(StrategyClass, **kwargs)
         
-        share = position / row['total_vol']
-        price_range_risk = (row['max_price'] - row['min_price']) * 0.6
-        base_volatility = max(row['std_price'], price_range_risk)
-        if base_volatility < 0.1: base_volatility = row['avg_price'] * 0.01
-        
-        k_factor = 2.0
-        share_impact = np.power(share, 0.8)
-        
-        unit_slippage = base_volatility * k_factor * share_impact
-        # 总滑点成本 = 单位滑点 * 持仓量
-        return unit_slippage * position
+        # 确保最后平仓 (如果 buffer 没触发或者数据缺损，这里做最后的兜底)
+        if engine.current_position != 0:
+            engine.execute_order(0, reason="EOF_FORCE_CLOSE")
 
-    for _, row in df.iterrows():
-        # 策略 A: 笨策略 (始终满仓)
-        cost_naive = calculate_cost(row, base_pos)
+        # === 单合约统计 ===
+        history_df = pd.DataFrame(engine.history)
         
-        # 策略 B: 智能策略
-        # 判断阈值
-        limit = ph_threshold if row['type'] == 'PH' else qh_threshold
+        if history_df.empty:
+            continue
+
+        # 最终权益 (Equity) 就是该合约的净利润 (因为最后持仓为0，Equity = Cash)
+        final_pnl = history_df.iloc[-1]['equity']
+        total_vol = history_df[history_df['action'].isin(['BUY', 'SELL'])]['position'].diff().abs().sum()
+        trade_records = history_df[history_df['action'] != 'HOLD'].copy()
         
-        # 如果流动性低于阈值，降级仓位；否则满仓
-        actual_pos = reduced_pos if row['total_vol'] < limit else base_pos
-        cost_smart = calculate_cost(row, actual_pos)
-        
-        # 计算节省 (Savings)
-        # 注意：如果降级仓位了，意味着我们少赚了这部分电量的价差利润？
-        # 这里我们只计算 "滑点成本的节省"。这是一个纯风控视角。
-        # 严格来说：Risk Adjusted Return 需要更复杂的 PnL 计算，但作为风控演示，算滑点节省足够震撼。
-        
-        # 修正逻辑：为了公平对比，我们假设我们需要交易 base_pos 的量。
-        # 智能策略拆成了：(reduced_pos 在当前时刻交易) + (剩余量在其他时刻交易或放弃)
-        # 简化模型：直接比较单次冲击成本的减少
-        
-        saved = cost_naive - cost_smart
-        cumulative_saved += saved
-        
-        results.append({
-            "time": row['time'],
-            "type": row['type'],
-            "cost_naive": round(cost_naive, 2),
-            "cost_smart": round(cost_smart, 2),
-            "saved": round(saved, 2),
-            "cumulative": round(cumulative_saved, 2),
-            "action": "DOWNGRADE" if actual_pos < base_pos else "HOLD"
+        # 构造详细交易记录 (用于前端弹窗表格)
+        trades_detail = []
+        for _, t in trade_records.iterrows():
+            trades_detail.append({
+                "time": t['time'].strftime('%Y-%m-%d %H:%M'),
+                "action": t['action'],
+                "price": safe_float(t['price']),
+                "vol": safe_float(t['trade_vol']), # 简化逻辑，这里其实应该算 delta
+                "signal": t['signal'],
+                "cost": safe_float(t['slippage_cost'])
+            })
+            
+        # 构造曲线数据 (用于前端弹窗画图)
+        # 只保留必要字段减小体积
+        chart_data = []
+        for _, t in history_df.iterrows():
+            chart_data.append({
+                "t": t['time'].strftime('%H:%M'),
+                "p": safe_float(t['price']),
+                "v": safe_float(t['volume']),
+                "a": t['action'] if t['action'] != 'HOLD' else None, # 用于标记买卖点
+                "s": t['signal'] if t['action'] != 'HOLD' else None
+            })
+
+        contract_results.append({
+            "contract_id": cid,
+            "type": c_row.contract_type,
+            "delivery_start": delivery_start.strftime('%Y-%m-%d %H:%M'),
+            "delivery_end": delivery_end.strftime('%H:%M'), # 结束时间只显示时分即可
+            "open_time": open_ts_naive.strftime('%Y-%m-%d %H:%M'),
+            "close_time": close_ts_naive.strftime('%Y-%m-%d %H:%M'),
+            "pnl": safe_float(final_pnl),
+            "trade_count": len(trade_records),
+            "slippage": safe_float(engine.total_slippage_cost),
+            "details": trades_detail, # 详情表数据
+            "chart": chart_data       # 图表数据
         })
+
+    # 3. 全局统计
+    if not contract_results:
+        return {"status": "empty", "msg": "无有效交易结果"}
+    
+    # 调用专门的计算函数
+    summary = calculate_quant_metrics(contract_results)
         
-    # --- 3. 统计汇总 ---
-    total_naive_cost = sum(r['cost_naive'] for r in results)
-    total_smart_cost = sum(r['cost_smart'] for r in results)
+    df_res = pd.DataFrame(contract_results)
     
-    summary = {
-        "total_naive_cost": round(total_naive_cost, 2),
-        "total_smart_cost": round(total_smart_cost, 2),
-        "total_saved": round(cumulative_saved, 2),
-        "roi_improvement": round((cumulative_saved / total_naive_cost * 100), 2) if total_naive_cost > 0 else 0,
-        "downgrade_count": len([r for r in results if r['action'] == 'DOWNGRADE'])
+    df_res.sort_values(by='delivery_start', inplace=True)
+    # 按时间/ID排序返回列表
+    contract_list = df_res.to_dict(orient='records')
+
+    return {
+        "status": "success", 
+        "data": {
+            "summary": summary,
+            "contracts": contract_list
+        }
     }
+
+def calculate_quant_metrics(contract_results):
+    """
+    【核心】计算专业量化指标
+    """
+    if not contract_results:
+        return {}
+        
+    df = pd.DataFrame(contract_results)
     
-    return {"summary": summary, "chart": results}
+    # 1. 基础数据
+    total_pnl = df['pnl'].sum()
+    total_trades = df['trade_count'].sum()
+    winning_trades = len(df[df['pnl'] > 0])
+    losing_trades = len(df[df['pnl'] <= 0])
+    
+    # 2. 胜率 (Win Rate)
+    win_rate = (winning_trades / len(df)) * 100 if len(df) > 0 else 0
+    
+    # 3. 盈亏比 (Profit Factor) = 总盈利 / |总亏损|
+    gross_profit = df[df['pnl'] > 0]['pnl'].sum()
+    gross_loss = abs(df[df['pnl'] < 0]['pnl'].sum())
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else 999.0 # 避免除零
+    
+    # 4. 最大回撤 (Max Drawdown)
+    # 这里的回撤是基于“合约资金曲线”的。
+    # 假设我们按时间顺序交易这些合约，累计盈亏曲线是怎样的？
+    # 注意：真实情况是并行交易，这里简化为累加资金曲线来估算
+    df_sorted = df.sort_values(by='close_time') # 假设 df 有 close_time
+    cumulative_pnl = df_sorted['pnl'].cumsum()
+    running_max = cumulative_pnl.cummax()
+    drawdown = running_max - cumulative_pnl
+    max_drawdown = drawdown.max()
+    
+    # 5. 夏普比率 (Sharpe Ratio) - 简化版
+    # 假设无风险利率为 0
+    # Sharpe = 平均收益 / 收益标准差
+    avg_return = df['pnl'].mean()
+    std_return = df['pnl'].std()
+    sharpe_ratio = (avg_return / std_return) if std_return > 0 else 0
+    
+    return {
+        "total_pnl": round(safe_float(total_pnl), 2),
+        "win_rate": round(safe_float(win_rate), 1),       # 胜率保留1位
+        "profit_factor": round(safe_float(profit_factor), 2),
+        "max_drawdown": round(safe_float(max_drawdown), 2),
+        "sharpe_ratio": round(safe_float(sharpe_ratio), 3), # 夏普保留3位
+        
+        "trade_count": int(total_trades),
+        "max_profit": round(safe_float(df['pnl'].max()), 2),
+        "max_loss": round(safe_float(df['pnl'].min()), 2),
+        "contract_count": len(df)
+    }

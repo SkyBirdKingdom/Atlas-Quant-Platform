@@ -66,7 +66,7 @@
 <script setup>
 import { ref } from 'vue';
 // 引入 Element Plus 的图标
-import { DataLine, Calendar, Setting } from '@element-plus/icons-vue';
+import { DataLine, Calendar, Setting, Histogram, TrendCharts } from '@element-plus/icons-vue';
 
 // 引入三个核心业务组件
 import RiskDashboard from './components/RiskDashboard.vue';
@@ -76,7 +76,7 @@ import BacktestLab from './components/BacktestLab.vue';
 import MarketAnalysis from './components/MarketAnalysis.vue';
 
 // 默认显示第一个 Tab
-const activeTab = ref('daily');
+const activeTab = ref('backtest');
 </script>
 
 <style>

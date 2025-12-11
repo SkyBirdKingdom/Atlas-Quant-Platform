@@ -177,7 +177,7 @@ const selectContract = async (c) => {
   currentContract.value = c;
   
   try {
-    const res = await getCandles(c.contract_id);
+    const res = await getCandles(selectedArea.value, c.contract_id);
     const rawData = res.data;
     
     await nextTick();
