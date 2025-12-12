@@ -14,8 +14,9 @@ import pandas as pd
 from .core.logger import setup_logging
 import os
 from .utils.time_helper import get_trading_window
-from datetime import timezone
+from datetime import timezone, timedelta
 from typing import Dict, Any
+from .models import BacktestRecord
 
 # --- 生命周期管理 ---
 @asynccontextmanager
@@ -72,6 +73,132 @@ class FeatureDebugRequest(BaseModel):
 
 task_status = {}
 backtest_tasks = {}
+
+@app.delete("/api/backtest/history/{record_id}")
+def delete_backtest_history(record_id: str, db: Session = Depends(get_db)):
+    record = db.query(BacktestRecord).filter(BacktestRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+    
+    db.delete(record)
+    db.commit()
+    return {"status": "success", "message": "Deleted successfully"}
+
+@app.get("/api/backtest/reproduce/{record_id}/{contract_id}")
+def reproduce_contract_result(record_id: str, contract_id: str, db: Session = Depends(get_db)):
+    """
+    【不可变复现接口】
+    1. 交易记录：直接从历史存档读取 (Immutable)
+    2. K线数据：从行情表实时读取 (Market Data)
+    """
+    # 1. 查历史记录
+    record = db.query(BacktestRecord).filter(BacktestRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="历史记录不存在")
+    
+    # 2. 在 JSON 中找到该合约的存档
+    contract_stat = next((c for c in record.contract_stats if c['cid'] == contract_id), None)
+    if not contract_stat:
+        raise HTTPException(status_code=404, detail="该回测记录中未找到此合约")
+        
+    # 3. 提取已存档的交易记录
+    trades_detail = contract_stat.get('txs', [])
+    
+    # 4. 获取 K 线数据 (只查行情表，不跑策略)
+    # 我们需要构造完整的时间轴，与 backtest.py 的逻辑保持一致 (透传所有分钟)
+    
+    # 4.1 解析时间窗口
+    area = record.area
+    # 注意：存档里的时间是字符串，需要转 datetime
+    try:
+        open_ts_str = contract_stat['open_t'] # "2025-12-01 13:00"
+        close_ts_str = contract_stat['close_t']
+        
+        # 简单处理：利用 pandas 生成时间轴
+        full_idx = pd.date_range(start=open_ts_str, end=close_ts_str, freq='1min', inclusive='left')
+    except Exception as e:
+        return {"status": "error", "msg": f"时间解析失败: {e}"}
+
+    # 4.2 查询数据库 K 线
+    from .models import MarketCandle
+    candles = db.query(MarketCandle).filter(
+        MarketCandle.contract_id == contract_id,
+        MarketCandle.area == area
+    ).all()
+    
+    # 转 DataFrame 方便合并
+    if not candles:
+        # 如果行情数据丢了，至少还能看交易记录表格
+        return {
+            "status": "success",
+            "data": { "chart": [], "details": trades_detail, "msg": "K线数据缺失" }
+        }
+
+    df_candles = pd.DataFrame([{
+        "timestamp": c.timestamp,
+        "open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume
+    } for c in candles])
+    
+    # 确保 timestamp 是 datetime 类型且无时区 (假设 DB 存的是 UTC Naive)
+    df_candles['timestamp'] = pd.to_datetime(df_candles['timestamp'])
+    df_candles.set_index('timestamp', inplace=True)
+    
+    # 4.3 合并：左连接到完整时间轴
+    df_merged = pd.DataFrame(index=full_idx)
+    df_merged = df_merged.join(df_candles)
+    
+    # 5. 构造 Chart Data (适配 Lightweight Charts)
+    chart_data = []
+    for ts, row in df_merged.iterrows():
+        ts_seconds = int(ts.timestamp())
+        
+        item = { "t": ts_seconds }
+        
+        # 只有有数据的分钟才传 OHLC，否则留白
+        # 注意：这里我们直接用数据库里的 volume，不再做 ffill 检查，因为数据库里存的就是真实 K 线
+        if pd.notnull(row['volume']) and row['volume'] > 0:
+            item.update({
+                "o": row['open'], "h": row['high'], "l": row['low'], "c": row['close'],
+                "v": row['volume']
+            })
+            
+        # 【关键】把交易标记 (Markers) 映射回 K 线图
+        # 我们遍历 trades_detail，看有没有发生在这个时间点的交易
+        # trades_detail 里的 time 是 "YYYY-MM-DD HH:MM"
+        # 这种匹配方式效率较低 (O(N*M))，但考虑到单合约交易很少，完全没问题
+        
+        # 查找当前分钟是否有交易
+        full_ts_str = ts.strftime('%Y-%m-%d %H:%M')
+        
+        # 可能会有多个动作 (比如先 Buy 后 Sell)，这里简单取最后一个非 Hold 动作
+        # 或者在前端处理多个 Marker。为了简单，我们把所有动作拼接到 'a' 字段?
+        # Lightweight Charts 的 setMarkers 是独立的数组，其实不需要绑在 K 线数据里返回
+        # 但为了复用 renderDetailChart 的逻辑，我们还是把动作绑在 K 线上返回
+        
+        actions = [t for t in trades_detail if t['time'] == full_ts_str]
+        if actions:
+            last_action = actions[-1]
+            item['a'] = last_action['action'] # BUY / SELL / FORCE_CLOSE
+            # item['s'] = last_action['signal']
+            
+        chart_data.append(item)
+
+    return {
+        "status": "success",
+        "data": {
+            "chart": chart_data,
+            "details": trades_detail
+        }
+    }
+
+@app.get("/api/backtest/history")
+def get_backtest_history(limit: int = 20, db: Session = Depends(get_db)):
+    """获取最近的回测记录"""
+    records = db.query(BacktestRecord)\
+        .order_by(BacktestRecord.created_at.desc())\
+        .limit(limit)\
+        .all()
+    return {"status": "success", "data": records}
 
 @app.post("/api/market/kline")
 def get_kline_data(req: MarketDataRequest, db: Session = Depends(get_db)):

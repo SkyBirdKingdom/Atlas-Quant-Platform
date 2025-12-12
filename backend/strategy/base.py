@@ -1,5 +1,6 @@
 # backend/strategy/base.py
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 class Strategy(ABC):
     def __init__(self):
@@ -7,9 +8,18 @@ class Strategy(ABC):
         self.engine = None
         # 新增：最大持仓限制（由外部注入）
         self.max_pos = 0.0 
+        self.logs = []
 
     def set_engine(self, engine):
         self.engine = engine
+    
+    def log(self, message):
+        """
+        记录策略内部日志
+        """
+        # 简单加上时间戳
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        self.logs.append(f"[{timestamp}] {message}")
 
     @abstractmethod
     def init(self):

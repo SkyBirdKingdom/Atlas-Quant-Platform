@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON
 from .database import Base
+from datetime import datetime
 
 class Trade(Base):
     __tablename__ = "trades"
@@ -51,3 +52,30 @@ class MarketCandle(Base):
     volume = Column(Float)
     vwap = Column(Float)     # 成交量加权均价 (非常重要)
     trade_count = Column(Integer) # 这1分钟内有多少笔成交
+
+class BacktestRecord(Base):
+    __tablename__ = "backtest_history"
+
+    id = Column(String, primary_key=True, index=True) # UUID
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    # === 输入参数 (Snapshot) ===
+    strategy_name = Column(String)
+    area = Column(String)
+    start_date = Column(String)
+    end_date = Column(String)
+    # 存储具体的策略参数 (如 rsi_buy, max_pos)，用 JSON 存最灵活
+    params = Column(JSON) 
+    
+    # === 输出结果 (Metrics) ===
+    total_pnl = Column(Float)
+    sharpe_ratio = Column(Float)
+    max_drawdown = Column(Float)
+    profit_factor = Column(Float)
+    win_rate = Column(Float)
+    trade_count = Column(Integer)
+
+    # 【新增】合约摘要列表 (JSON)
+    # 存储格式: [{"id": "NX_1", "pnl": 100, "count": 5}, ...]
+    # 不存 K 线和详细 Logs，只存结果
+    contract_stats = Column(JSON)

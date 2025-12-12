@@ -44,4 +44,11 @@ export const getTradesbyContract = (area, contractId) =>
 
 export const getBacktestStatus = (taskId) => api.get(`/backtest/status/${taskId}`);
 
+export const getBacktestHistory = () => api.get('/backtest/history');
+
+export const deleteBacktestHistory = (recordId) => api.delete(`/backtest/history/${recordId}`);
+
+export const reproduceContract = (recordId, contractId) => 
+  api.get(`/backtest/reproduce/${recordId}/${contractId}`);
+
 export default api;

@@ -61,10 +61,14 @@ class DynamicConfigStrategy(Strategy):
         if is_buy_signal:
             if current_pos < self.max_pos:
                 reason = " & ".join([f"{c['indicator']}{c['op']}{c['val']}" for c in buy_rules])
+                msg = f"LONG SIGNAL: {reason} | Price: {row.get('close')}"
+                self.log(msg)
                 self.set_target_position(self.max_pos, reason=f"LONG: {reason}")
 
         # 处理卖出
         elif is_sell_signal:
             if current_pos > -self.max_pos:
                 reason = " & ".join([f"{c['indicator']}{c['op']}{c['val']}" for c in sell_rules])
+                msg = f"SHORT SIGNAL: {reason} | Price: {row.get('close')}"
+                self.log(msg)
                 self.set_target_position(-self.max_pos, reason=f"SHORT: {reason}")
