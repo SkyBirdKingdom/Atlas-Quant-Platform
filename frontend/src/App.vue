@@ -39,6 +39,16 @@
         <LiquidityHeatmap />
       </el-tab-pane>
 
+      <el-tab-pane name="optimize" label="🚀 圣杯寻找">
+        <template #label>
+          <span class="custom-tabs-label">
+            <el-icon><Compass /></el-icon>
+            <span>参数优化</span>
+          </span>
+        </template>
+        <OptimizationLab />
+      </el-tab-pane>
+
       <el-tab-pane name="backtest" label="🧪 策略实验室">
         <template #label>
           <span class="custom-tabs-label">
@@ -74,6 +84,7 @@ import LiquidityHeatmap from './components/LiquidityHeatmap.vue';
 import DataManager from './components/DataManager.vue';
 import BacktestLab from './components/BacktestLab.vue';
 import MarketAnalysis from './components/MarketAnalysis.vue';
+import OptimizationLab from './components/OptimizationLab.vue';
 
 // 默认显示第一个 Tab
 const activeTab = ref('backtest');

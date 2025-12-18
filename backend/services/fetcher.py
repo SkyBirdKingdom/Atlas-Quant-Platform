@@ -25,7 +25,7 @@ INITIAL_START_DATE = "2025-01-01T00:00:00Z"
 def get_token():
     token_url = "https://sts.nordpoolgroup.com/connect/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded", "Authorization": "Basic Y2xpZW50X21hcmtldGRhdGFfYXBpOmNsaWVudF9tYXJrZXRkYXRhX2FwaQ=="}
-    params = {"grant_type": "password", "scope": "marketdata_api", "username": "API_DATA_GreenVoltisSwedenAB", "password": "6meGT1)=WX85(aRm2b"}
+    params = {"grant_type": "password", "scope": "marketdata_api", "username": "API_DATA_GreenVoltisSwedenAB2", "password": "VA523P)y{w3r4fkMA"}
     resp = requests.post(token_url, headers=headers, data=params, timeout=10)
     resp.raise_for_status()
     return resp.json().get("access_token")

@@ -51,4 +51,8 @@ export const deleteBacktestHistory = (recordId) => api.delete(`/backtest/history
 export const reproduceContract = (recordId, contractId) => 
   api.get(`/backtest/reproduce/${recordId}/${contractId}`);
 
+export const getBacktestOptimize = (data) => api.post('/backtest/optimize', data);
+
+export const getOptimizationStatus = (taskId) => api.get(`/backtest/optimize/status/${taskId}`);
+
 export default api;

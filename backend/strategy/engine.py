@@ -40,12 +40,28 @@ class BacktestEngine:
     def run(self, strategy_class, **params):
         self.strategy = strategy_class()
         self.strategy.set_engine(self)
-        
         for k, v in params.items():
             setattr(self.strategy, k, v)
-            
         self.strategy.init()
+        
+        self._run_loop() # 提取公共循环逻辑
+        return self.get_results()
 
+    def run_custom_strategy(self, strategy_instance):
+        """
+        【新增】直接运行外部传入的策略实例 (用于优化器)
+        """
+        self.strategy = strategy_instance
+        self.strategy.set_engine(self)
+        self.strategy.init()
+        
+        self._run_loop()
+        return self.get_results()
+
+    def _run_loop(self):
+        """
+        【新增】公共回测循环逻辑
+        """
         deadline = self.contract_close_ts - timedelta(minutes=self.force_close_minutes)
         
         for idx, (timestamp, row) in enumerate(self.data.iterrows()):
@@ -69,7 +85,6 @@ class BacktestEngine:
             # 4. 策略/强平调度
             if self.is_force_closing:
                 self.active_orders = [] 
-                # 【精度修复】判断持仓是否为0时，允许极小误差
                 if abs(self.current_position) > 1e-6:
                     self.place_order(0, type='MARKET', reason="FORCE_CLOSE", ttl=1)
             else:
@@ -89,10 +104,7 @@ class BacktestEngine:
                 "close": float(candle.get('close', 0)),
                 "price": current_price,
                 "volume": float(candle.get('volume', 0)),
-                
-                # 这里也 round 一下，确保历史记录好看
                 "position": round(self.current_position, 1),
-                
                 "action": self.current_action,
                 "signal": self.current_signal,
                 "slippage_cost": self.current_slippage_cost,
@@ -100,8 +112,7 @@ class BacktestEngine:
                 "equity": total_equity,
                 "trade_vol": self.current_trade_vol 
             })
-            
-        return self.get_results()
+
 
     def place_order(self, target_pos, type='MARKET', limit_price=None, reason="", ttl=60):
         # 【精度修复】下单时也对目标仓位做圆整，防止策略传进来奇怪的小数

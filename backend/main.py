@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import List
 from sqlalchemy.orm import Session
 from .database import get_db, Base, engine
-from .services import fetcher, analyzer, stats, backtest, market_data, kline_generator, feature_engine, live_runner # 导入刚才写的服务
+from .services import fetcher, analyzer, stats, backtest, market_data, kline_generator, feature_engine, live_runner, optimizer # 导入刚才写的服务
 from fastapi.middleware.cors import CORSMiddleware # 引入 CORS
 import uuid
 from contextlib import asynccontextmanager
@@ -71,8 +71,77 @@ class FeatureDebugRequest(BaseModel):
     start_date: str
     end_date: str
 
+class OptimizeRequest(BaseModel):
+    area: str
+    start_date: str
+    end_date: str
+    base_params: Dict[str, Any] # 包含 max_pos, force_close 等
+    rules: Dict[str, List[Dict]] # 基础策略逻辑
+    param_grid: Dict[str, List[float]] # {"rsi_buy": [20, 25, 30], "rsi_sell": [70, 80]}
+
 task_status = {}
 backtest_tasks = {}
+optimization_tasks = {}
+
+@app.post("/api/backtest/optimize")
+def run_optimization_async(req: OptimizeRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """
+    启动参数矩阵扫描
+    """
+    task_id = str(uuid.uuid4())
+    
+    # 初始化状态
+    optimization_tasks[task_id] = {
+        "status": "running", 
+        "message": "正在初始化参数矩阵...",
+        "progress": 0
+    }
+    
+    # 放入后台队列
+    background_tasks.add_task(optimization_worker, task_id, req.dict())
+    
+    return {"status": "success", "task_id": task_id}
+
+# 3. 新增查询状态接口
+@app.get("/api/backtest/optimize/status/{task_id}")
+def get_optimization_status(task_id: str):
+    task = optimization_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+# 4. 实现后台 Worker
+def optimization_worker(task_id: str, req_data: dict):
+    # 手动创建 Session (因为离开了 Request 上下文)
+    from .database import SessionLocal
+    db = SessionLocal()
+    try:
+        base_req = {
+            "area": req_data['area'],
+            "start_date": req_data['start_date'],
+            "end_date": req_data['end_date'],
+            "rules": req_data['rules'],
+            "max_pos": req_data['base_params'].get('max_pos', 5.0),
+            "force_close_minutes": req_data['base_params'].get('force_close_minutes', 0),
+            "enable_slippage": req_data['base_params'].get('enable_slippage', False)
+        }
+        
+        # 调用优化器 (注意：run_grid_search 最好能支持回调汇报进度)
+        result = optimizer.run_grid_search(db, base_req, req_data['param_grid'])
+        
+        optimization_tasks[task_id].update({
+            "status": "completed",
+            "data": result, # 这里包含 results 列表
+            "message": "优化完成"
+        })
+        
+    except Exception as e:
+        optimization_tasks[task_id].update({
+            "status": "failed",
+            "message": str(e)
+        })
+    finally:
+        db.close()
 
 @app.delete("/api/backtest/history/{record_id}")
 def delete_backtest_history(record_id: str, db: Session = Depends(get_db)):
