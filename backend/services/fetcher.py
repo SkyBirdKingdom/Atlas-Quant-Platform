@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from ..models import Trade, FetchState
+from ..core.config import settings
 
 logger = logging.getLogger("NordPoolFetcher")
 
@@ -23,9 +24,11 @@ API_URL = "https://data-api.nordpoolgroup.com/api/v2/Intraday/Trades/ByDeliveryS
 INITIAL_START_DATE = "2025-01-01T00:00:00Z"
 
 def get_token():
+    user = settings.NORDPOOL_USER
+    pwd = settings.NORDPOOL_PASSWORD
     token_url = "https://sts.nordpoolgroup.com/connect/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded", "Authorization": "Basic Y2xpZW50X21hcmtldGRhdGFfYXBpOmNsaWVudF9tYXJrZXRkYXRhX2FwaQ=="}
-    params = {"grant_type": "password", "scope": "marketdata_api", "username": "API_DATA_GreenVoltisSwedenAB2", "password": "VA523P)y{w3r4fkMA"}
+    params = {"grant_type": "password", "scope": "marketdata_api", "username": user, "password": pwd}
     resp = requests.post(token_url, headers=headers, data=params, timeout=10)
     resp.raise_for_status()
     return resp.json().get("access_token")

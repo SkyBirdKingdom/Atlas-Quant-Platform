@@ -31,6 +31,10 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
     
     force_close_minutes = kwargs.pop('force_close_minutes', 0)
     enable_slippage = kwargs.pop('enable_slippage', False)
+
+    # 提取参数时
+    take_profit_pct = kwargs.get('take_profit_pct', 0.0)
+    stop_loss_pct = kwargs.get('stop_loss_pct', 0.0)
     
     query = text("""
         SELECT DISTINCT contract_id, contract_type, delivery_start

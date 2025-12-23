@@ -8,3 +8,4 @@ requests
 apscheduler
 tenacity
 pandas_ta
+pydantic-settings

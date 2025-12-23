@@ -98,6 +98,10 @@ def run_grid_search(db: Session, base_req: dict, param_grid: dict):
             strategy = DynamicConfigStrategy()
             strategy.rules = run_rules
             strategy.max_pos = base_req.get('max_pos', 5.0)
+
+            # 【新增】赋值止盈止损
+            strategy.take_profit_pct = base_req.get('take_profit_pct', 0.0)
+            strategy.stop_loss_pct = base_req.get('stop_loss_pct', 0.0)
             
             # 运行 (使用新方法 run_custom_strategy)
             engine.run_custom_strategy(strategy)

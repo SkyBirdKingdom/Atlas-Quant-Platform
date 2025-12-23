@@ -123,7 +123,11 @@ def optimization_worker(task_id: str, req_data: dict):
             "rules": req_data['rules'],
             "max_pos": req_data['base_params'].get('max_pos', 5.0),
             "force_close_minutes": req_data['base_params'].get('force_close_minutes', 0),
-            "enable_slippage": req_data['base_params'].get('enable_slippage', False)
+            "enable_slippage": req_data['base_params'].get('enable_slippage', False),
+
+            # 【新增】透传止盈止损参数
+            "take_profit_pct": req_data['base_params'].get('take_profit_pct', 0.0),
+            "stop_loss_pct": req_data['base_params'].get('stop_loss_pct', 0.0)
         }
         
         # 调用优化器 (注意：run_grid_search 最好能支持回调汇报进度)

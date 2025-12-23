@@ -82,6 +82,19 @@
               <el-checkbox v-model="form.params.enable_slippage" label="启用滑点/冲击成本计算" border />
             </el-form-item>
 
+            <el-form-item label="高级风控">
+              <el-row :gutter="10">
+                <el-col :span="12">
+                  <div class="sub-label">止盈 (%) (0为不限)</div>
+                  <el-input-number v-model="form.params.take_profit_pct" :step="0.01" :min="0" :max="1" style="width: 100%" />
+                </el-col>
+                <el-col :span="12">
+                  <div class="sub-label">止损 (%) (0为不限)</div>
+                  <el-input-number v-model="form.params.stop_loss_pct" :step="0.01" :min="0" :max="1" style="width: 100%" />
+                </el-col>
+              </el-row>
+            </el-form-item>
+
             <el-divider content-position="left">
               <span style="color: #67c23a"><el-icon><Top /></el-icon> 买入/做多规则 (AND)</span>
             </el-divider>
@@ -279,7 +292,13 @@ let volumeSeries = null;
 
 const form = reactive({
   area: 'SE3', range: ['2025-12-01', '2025-12-01'],
-  params: { max_pos: 2.0, force_close_minutes: 10, enable_slippage: true },
+  params: { 
+    max_pos: 2.0, 
+    force_close_minutes: 10, 
+    enable_slippage: true, 
+    take_profit_pct: 0.05, // 默认 5% 止盈
+    stop_loss_pct: 0.02    // 默认 2% 止损
+ },
   rules: {
     buy: [
       { indicator: 'RSI_14', op: '<', val: 30 },
