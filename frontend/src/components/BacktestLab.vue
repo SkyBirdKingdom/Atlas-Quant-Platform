@@ -47,6 +47,7 @@
             <el-button type="primary" link size="small" icon="RefreshLeft">加载参数</el-button>
           </div>
         </div>
+        <el-empty v-if="historyList.length === 0" description="暂无历史记录" />
       </div>
     </el-drawer>
 
@@ -100,7 +101,7 @@
             </el-divider>
             
             <div v-for="(rule, idx) in form.rules.buy" :key="'b'+idx" class="rule-row">
-              <el-select v-model="rule.indicator" style="width: 110px" placeholder="指标">
+              <el-select v-model="rule.indicator" style="width: 110px" placeholder="左指标">
                 <el-option-group label="价格与趋势">
                    <el-option label="收盘价" value="close" />
                    <el-option label="SMA 50" value="SMA_50" />
@@ -114,10 +115,26 @@
                    <el-option label="MACD柱" value="MACDh_12_26_9" />
                 </el-option-group>
               </el-select>
+              
               <el-select v-model="rule.op" style="width: 60px">
                 <el-option label="<" value="<" /><el-option label=">" value=">" />
               </el-select>
-              <el-input v-model="rule.val" style="width: 90px" placeholder="值或指标" />
+              
+              <el-autocomplete
+                v-model="rule.val"
+                :fetch-suggestions="querySearchIndicators"
+                placeholder="值或指标"
+                style="width: 110px"
+                clearable
+              >
+                <template #default="{ item }">
+                  <div class="suggestion-item">
+                    <span class="s-val">{{ item.value }}</span>
+                    <span class="s-desc">{{ item.desc }}</span>
+                  </div>
+                </template>
+              </el-autocomplete>
+              
               <el-button type="danger" icon="Delete" circle size="small" @click="removeRule('buy', idx)" />
             </div>
             <el-button type="primary" link icon="Plus" size="small" @click="addRule('buy')">添加买入条件</el-button>
@@ -127,7 +144,7 @@
             </el-divider>
 
             <div v-for="(rule, idx) in form.rules.sell" :key="'s'+idx" class="rule-row">
-              <el-select v-model="rule.indicator" style="width: 110px" placeholder="指标">
+              <el-select v-model="rule.indicator" style="width: 110px" placeholder="左指标">
                 <el-option-group label="价格与趋势">
                    <el-option label="收盘价" value="close" />
                    <el-option label="SMA 50" value="SMA_50" />
@@ -141,10 +158,26 @@
                    <el-option label="MACD柱" value="MACDh_12_26_9" />
                 </el-option-group>
               </el-select>
+              
               <el-select v-model="rule.op" style="width: 60px">
                 <el-option label="<" value="<" /><el-option label=">" value=">" />
               </el-select>
-              <el-input v-model="rule.val" style="width: 90px" placeholder="值或指标" />
+              
+              <el-autocomplete
+                v-model="rule.val"
+                :fetch-suggestions="querySearchIndicators"
+                placeholder="值或指标"
+                style="width: 110px"
+                clearable
+              >
+                <template #default="{ item }">
+                  <div class="suggestion-item">
+                    <span class="s-val">{{ item.value }}</span>
+                    <span class="s-desc">{{ item.desc }}</span>
+                  </div>
+                </template>
+              </el-autocomplete>
+
               <el-button type="danger" icon="Delete" circle size="small" @click="removeRule('sell', idx)" />
             </div>
             <el-button type="danger" link icon="Plus" size="small" @click="addRule('sell')">添加卖出条件</el-button>
@@ -261,6 +294,7 @@
          <el-table-column prop="vol" label="量 (MW)" />
          <el-table-column prop="signal" label="触发信号" show-overflow-tooltip />
          <el-table-column prop="cost" label="成本" />
+         <el-table-column prop="fee" label="手续费" width="70" />
       </el-table>
     </el-dialog>
   </el-card>
@@ -271,8 +305,7 @@ import { ref, reactive, nextTick, onMounted, onUnmounted, markRaw } from 'vue';
 import { createChart, CandlestickSeries, HistogramSeries, CrosshairMode, createSeriesMarkers } from 'lightweight-charts';
 import { runBacktest, getBacktestStatus, getBacktestHistory, reproduceContract, deleteBacktestHistory } from '../api/service';
 import { ElMessage } from 'element-plus';
-import { TrendCharts, DataAnalysis, Plus, Delete, Top, Bottom, Right, InfoFilled } from '@element-plus/icons-vue';
-import { Clock, RefreshLeft } from '@element-plus/icons-vue';
+import { TrendCharts, DataAnalysis, Plus, Delete, Top, Bottom, Right, InfoFilled, Clock, RefreshLeft } from '@element-plus/icons-vue';
 
 const currentRecordId = ref(null);
 const historyVisible = ref(false);
@@ -296,8 +329,8 @@ const form = reactive({
     max_pos: 2.0, 
     force_close_minutes: 10, 
     enable_slippage: true, 
-    take_profit_pct: 0.05, // 默认 5% 止盈
-    stop_loss_pct: 0.02    // 默认 2% 止损
+    take_profit_pct: 0.05, 
+    stop_loss_pct: 0.02
  },
   rules: {
     buy: [
@@ -309,6 +342,27 @@ const form = reactive({
     ]
   }
 });
+
+// 指标建议字典
+const indicatorSuggestions = [
+  { value: '30', desc: '数值' },
+  { value: '70', desc: '数值' },
+  { value: '0', desc: '数值' },
+  { value: 'close', desc: '收盘价' },
+  { value: 'SMA_20', desc: 'MA 20' },
+  { value: 'SMA_50', desc: 'MA 50' },
+  { value: 'SMA_200', desc: 'MA 200' },
+  { value: 'RSI_14', desc: 'RSI' },
+  { value: 'BBU_20_2.0', desc: '布林上' },
+  { value: 'BBL_20_2.0', desc: '布林下' },
+];
+
+const querySearchIndicators = (queryString, cb) => {
+  const results = queryString
+    ? indicatorSuggestions.filter(i => i.value.toLowerCase().includes(queryString.toLowerCase()))
+    : indicatorSuggestions;
+  cb(results);
+};
 
 const addRule = (type) => form.rules[type].push({ indicator: 'RSI_14', op: '<', val: 0 });
 const removeRule = (type, idx) => form.rules[type].splice(idx, 1);
@@ -328,8 +382,6 @@ const getPFColor = (pf) => {
 const openHistory = async () => {
   historyVisible.value = true;
   try {
-    // 假设你在 api/service.js 里加了 getBacktestHistory
-    // 或者直接用 axios
     const res = await getBacktestHistory();
     historyList.value = res.data.data;
   } catch (e) {
@@ -341,7 +393,6 @@ const deleteRecord = async (id) => {
   try {
     await deleteBacktestHistory(id);
     ElMessage.success('删除成功');
-    // 删除后刷新列表
     await openHistory();
   } catch (e) {
     ElMessage.error('删除失败');
@@ -353,39 +404,31 @@ const formatTime = (isoStr) => {
 };
 
 const showDetail = async (row) => {
-  currentContract.value = row; // row 里现在只有摘要数据
+  currentContract.value = row;
   detailVisible.value = true;
   
-  // 清空旧图表
   if (chart) { chart.remove(); chart = null; }
   
-  // 场景 A: 刚跑完的新鲜数据 (row.chart 存在) -> 直接渲染
   if (row.chart && row.chart.length > 0) {
       await nextTick();
       renderDetailChart(row);
   } 
-  // 场景 B: 历史记录恢复的数据 (row.chart 不存在) -> 调用复现接口
   else if (currentRecordId.value) {
-      // 显示加载中状态...
       ElMessage.info('正在复现 K 线...');
       try {
-          // 调用后端“时光机”
-          const res = await reproduceContract(currentRecordId.value, row.contract_id); // 这里的 row.contract_id 对应 slim_contracts 里的 cid
+          const res = await reproduceContract(currentRecordId.value, row.contract_id);
           
           if (res.data.status === 'success') {
-              // 补全数据
               const fullData = res.data.data;
-              // 构造一个完整的 contract 对象传给 renderDetailChart
               const fullContract = {
                   ...row,
                   chart: fullData.chart,
                   details: fullData.details,
-                  // 确保时间字段对齐 (后端 slim_contracts 返回的是简写 key)
                   open_time: row.open_time || row.open_t, 
                   close_time: row.close_time || row.close_t
               };
               
-              currentContract.value = fullContract; // 更新弹窗绑定的数据
+              currentContract.value = fullContract;
               await nextTick();
               renderDetailChart(fullContract);
           }
@@ -396,13 +439,13 @@ const showDetail = async (row) => {
 };
 
 const restoreSnapshot = (rec) => {
-  // 1. 回填参数 (UI)
   form.area = rec.area;
   if (rec.start_date && rec.end_date) form.range = [rec.start_date, rec.end_date];
   if (rec.params && rec.params.rules) form.rules = JSON.parse(JSON.stringify(rec.params.rules));
   if (rec.params.max_pos) form.params.max_pos = rec.params.max_pos;
+  if (rec.params.take_profit_pct !== undefined) form.params.take_profit_pct = rec.params.take_profit_pct;
+  if (rec.params.stop_loss_pct !== undefined) form.params.stop_loss_pct = rec.params.stop_loss_pct;
   
-  // 2. 【核心】直接恢复结果面板 (无需重跑)
   summary.value = {
       total_pnl: rec.total_pnl,
       sharpe_ratio: rec.sharpe_ratio,
@@ -412,9 +455,6 @@ const restoreSnapshot = (rec) => {
       trade_count: rec.trade_count
   };
   
-  // 3. 恢复合约列表 (适配字段名)
-  // 数据库存的是 slim 格式 (cid, start, pnl...)，前端表格对应的是 contract_id, delivery_start...
-  // 我们做一个映射
   if (rec.contract_stats) {
       contractList.value = rec.contract_stats.map(c => ({
           contract_id: c.cid,
@@ -426,13 +466,10 @@ const restoreSnapshot = (rec) => {
           pnl: c.pnl,
           trade_count: c.cnt,
           slippage: c.slip,
-          // chart: undefined <--- 关键：这里没有图表数据
       }));
   }
   
-  // 4. 记录当前 RecordID，供后续点击详情时使用
   currentRecordId.value = rec.id;
-  
   ElMessage.success('历史结果已加载 (点击合约可复现详情)');
   historyVisible.value = false;
 };
@@ -470,7 +507,7 @@ const runTest = async () => {
                 ElMessage.error(statusRes.data.message);
             }
         } catch (e) { clearInterval(poll); loading.value = false; }
-      }, 5000);
+      }, 1000);
     } else { loading.value = false; ElMessage.error(res.data.msg); }
   } catch (e) { loading.value = false; }
 };
@@ -516,7 +553,6 @@ const renderDetailChart = (contract) => {
   contract.chart.forEach((d, idx) => {
     const ts = d.t;
 
-    // 如果后端传了 o (Open)，说明有有效 K 线数据
     if (d.o !== undefined && d.o !== null) {
         candles.push({
           time: ts,
@@ -529,7 +565,6 @@ const renderDetailChart = (contract) => {
           color: d.c >= d.o ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'
         });
 
-        // 标记点 (Markers)
         if (d.a === 'BUY') {
           markers.push({ time: ts, position: 'belowBar', color: '#67c23a', shape: 'arrowUp', text: 'B' });
         } else if (d.a === 'SELL') {
@@ -538,18 +573,7 @@ const renderDetailChart = (contract) => {
           markers.push({ time: ts, position: 'aboveBar', color: '#7b1fa2', shape: 'arrowDown', text: 'F' });
         }
     } else {
-        // 关键：为了保持时间轴连续，对于无数据的分钟，我们只推时间，不推数据
-        // Lightweight Charts 会自动处理这种 "Whitespace" (留白/断层)
-        // 注意：不应该推 { time: ts, value: 0 }，这会画出一条 0 的线
-        // 正确做法是在 candles 数组里跳过这个时间点？
-        // 不，Lightweight Charts 要求时间连续。
-        // 如果想留白，其实只要不 add 数据就行。
-        // 但是为了保持横轴刻度均匀，我们通常需要填充数据。
-        // 既然后端已经填充了 ffill 价格，这里 d.o 应该是有值的（除非我们刚才改了 backtest.py）
-        
-        // 刚才的 backtest.py 修改为：即使 volume=0 也返回 OHLC。
-        // 所以这里的 else 其实不会走到。所有的分钟都会有蜡烛图（平盘）。
-        // 这样图表就是连续的，非常清晰。
+       // Whitespace
     }
   });
 
@@ -559,7 +583,6 @@ const renderDetailChart = (contract) => {
 
   chart.timeScale().fitContent();
 
-  // Tooltip 逻辑
   chart.subscribeCrosshairMove(param => {
     const toolTip = toolTipRef.value;
     if (!toolTip) return;
@@ -586,14 +609,14 @@ const renderDetailChart = (contract) => {
     const date = new Date(param.time * 1000);
     const timeStr = `${date.getUTCHours().toString().padStart(2,'0')}:${date.getUTCMinutes().toString().padStart(2,'0')}`;
 
-    let html = `<div style="color: #333; font-weight: bold; margin-bottom: 4px">${timeStr} (UTC)</div>`;
-    html += `<div style="display: flex; justify-content: space-between;"><span>Open:</span> <span>${candleData.open.toFixed(2)}</span></div>`;
-    html += `<div style="display: flex; justify-content: space-between;"><span>High:</span> <span>${candleData.high.toFixed(2)}</span></div>`;
-    html += `<div style="display: flex; justify-content: space-between;"><span>Low:</span> <span>${candleData.low.toFixed(2)}</span></div>`;
-    html += `<div style="display: flex; justify-content: space-between;"><span>Close:</span> <span>${candleData.close.toFixed(2)}</span></div>`;
+    let html = `<div class="tt-time">${timeStr} (UTC)</div>`;
+    html += `<div class="tt-row"><span>Open:</span> <span class="tt-val">${candleData.open.toFixed(2)}</span></div>`;
+    html += `<div class="tt-row"><span>High:</span> <span class="tt-val">${candleData.high.toFixed(2)}</span></div>`;
+    html += `<div class="tt-row"><span>Low:</span> <span class="tt-val">${candleData.low.toFixed(2)}</span></div>`;
+    html += `<div class="tt-row"><span>Close:</span> <span class="tt-val">${candleData.close.toFixed(2)}</span></div>`;
     
     if(volumeData && volumeData.value !== undefined) {
-        html += `<div style="display: flex; justify-content: space-between; color: #26a69a"><span>Vol:</span> <span>${volumeData.value.toFixed(1)}</span></div>`;
+        html += `<div class="tt-row" style="color: #26a69a"><span>Vol:</span> <span class="tt-val">${volumeData.value.toFixed(1)}</span></div>`;
     }
 
     toolTip.innerHTML = html;
@@ -633,7 +656,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 保持原有布局样式 */
 .lab-container { display: flex; gap: 20px; height: 800px; }
 .config-panel { width: 340px; background: #f8f9fa; padding: 15px; border-radius: 8px; height: 100%; overflow-y: auto; flex-shrink: 0; }
 .result-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -641,7 +663,6 @@ onUnmounted(() => {
 .sub-label { font-size: 12px; color: #909399; margin-bottom: 4px; }
 .chart-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; justify-content: center; }
 
-/* 容器样式复用 */
 .summary-box { display: flex; align-items: center; justify-content: space-between; padding: 20px 30px; background: #ffffff; border: 1px solid #ebeef5; border-radius: 12px; margin-bottom: 15px; flex-shrink: 0; box-shadow: 0 4px 16px rgba(0,0,0,0.06); }
 .stat-item { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 100px; }
 .stat-item.main-stat { min-width: 150px; align-items: flex-start; }
@@ -661,14 +682,13 @@ onUnmounted(() => {
 .text-gold { color: #e6a23c !important; }
 .text-gray { color: #606266 !important; }
 
-/* 图表容器样式 */
 .lw-chart { width: 100%; height: 350px; }
 
 /* Tooltip */
 .floating-tooltip {
   width: 160px;
   position: absolute;
-  display: none; /* 默认隐藏 */
+  display: none;
   padding: 8px;
   box-sizing: border-box;
   font-size: 12px;
@@ -676,12 +696,12 @@ onUnmounted(() => {
   z-index: 1000;
   top: 12px;
   left: 12px;
-  pointer-events: none; /* 让鼠标事件穿透，不影响图表操作 */
+  pointer-events: none;
   border: 1px solid #2962FF;
   background: rgba(255, 255, 255, 0.9);
   border-radius: 4px;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-  font-family: 'Monaco', 'Consolas', monospace; /* 等宽字体对齐更好看 */
+  font-family: 'Monaco', 'Consolas', monospace;
   line-height: 1.6;
 }
 
@@ -708,4 +728,14 @@ onUnmounted(() => {
 .h-metric .label { font-size: 10px; color: #ccc; }
 .h-metric .value { font-weight: bold; font-size: 14px; font-family: 'DIN Alternate'; }
 .h-actions { text-align: right; border-top: 1px dashed #eee; padding-top: 5px; }
+
+/* 新增 Suggestion 样式 */
+.suggestion-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-width: 150px;
+}
+.s-val { font-weight: bold; color: #333; }
+.s-desc { font-size: 10px; color: #999; margin-left: 10px; }
 </style>

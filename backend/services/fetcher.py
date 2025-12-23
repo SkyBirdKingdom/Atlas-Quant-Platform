@@ -22,10 +22,10 @@ API_URL = "https://data-api.nordpoolgroup.com/api/v2/Intraday/Trades/ByDeliveryS
 # 首次运行时，如果没有历史记录，从这个时间点开始抓取
 # 注意：格式必须是 ISO 8601
 INITIAL_START_DATE = "2025-01-01T00:00:00Z"
+user = settings.NORDPOOL_USER
+pwd = settings.NORDPOOL_PASSWORD
 
 def get_token():
-    user = settings.NORDPOOL_USER
-    pwd = settings.NORDPOOL_PASSWORD
     token_url = "https://sts.nordpoolgroup.com/connect/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded", "Authorization": "Basic Y2xpZW50X21hcmtldGRhdGFfYXBpOmNsaWVudF9tYXJrZXRkYXRhX2FwaQ=="}
     params = {"grant_type": "password", "scope": "marketdata_api", "username": user, "password": pwd}

@@ -57,6 +57,7 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
     
     for index, c_row in enumerate(contracts):
         cid = c_row.contract_id
+        c_type = c_row.contract_type # 获取类型 (PH/QH)
 
         delivery_start = c_row.delivery_start
         duration_min = 60 if c_row.contract_type == 'PH' else 15
@@ -68,8 +69,8 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
 
         df = feature_engine.get_contract_features(db, cid, area)
         if df.empty: continue
-            
-        engine = BacktestEngine(df, close_ts_naive, force_close_minutes, enable_slippage)
+
+        engine = BacktestEngine(df, close_ts_naive, force_close_minutes, enable_slippage, contract_type=c_type)
         engine.run(StrategyClass, **kwargs)
         
         if engine.current_position != 0:
@@ -89,7 +90,8 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
                 "price": safe_float(t['price']),
                 "vol": safe_float(t['trade_vol']), 
                 "signal": t['signal'],
-                "cost": safe_float(t['slippage_cost'])
+                "cost": safe_float(t['slippage_cost']),
+                "fee": safe_float(t.get('fee_cost', 0))
             })
             
         chart_data = []

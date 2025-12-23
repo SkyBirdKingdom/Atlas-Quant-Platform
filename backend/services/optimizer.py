@@ -57,7 +57,8 @@ def run_grid_search(db: Session, base_req: dict, param_grid: dict):
             open_ts, close_ts = get_trading_window(row.delivery_start)
             preload_data[cid] = {
                 "df": df,
-                "close_ts": close_ts.replace(tzinfo=None)
+                "close_ts": close_ts.replace(tzinfo=None),
+                "type": row.contract_type # 【新增】缓存合约类型
             }
 
     logger.info(f"🔥 [Optimizer] 数据预加载完成，开始生成参数组合...")
@@ -91,7 +92,8 @@ def run_grid_search(db: Session, base_req: dict, param_grid: dict):
                 data['df'], 
                 data['close_ts'], 
                 force_close_minutes=base_req.get('force_close_minutes', 0),
-                enable_slippage=base_req.get('enable_slippage', False)
+                enable_slippage=base_req.get('enable_slippage', False),
+                contract_type=data['type'] # 【新增】传入类型
             )
             
             # 初始化策略实例
