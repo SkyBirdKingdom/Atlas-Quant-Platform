@@ -12,6 +12,7 @@ from ..utils.time_helper import get_trading_window
 from datetime import timedelta
 import uuid
 from ..models import BacktestRecord
+from decimal import Decimal
 
 logger = logging.getLogger("Backtest")
 
@@ -26,15 +27,14 @@ def safe_float(value, default=0.0):
 def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str, 
                           strategy_name: str = "DynamicConfig", **kwargs):
     
+    original_start = start_date
+    original_end = end_date
+    
     if 'T' not in start_date: start_date += " 00:00:00"
     if 'T' not in end_date: end_date += " 23:59:59"
     
     force_close_minutes = kwargs.pop('force_close_minutes', 0)
     enable_slippage = kwargs.pop('enable_slippage', False)
-
-    # 提取参数时
-    take_profit_pct = kwargs.get('take_profit_pct', 0.0)
-    stop_loss_pct = kwargs.get('stop_loss_pct', 0.0)
     
     query = text("""
         SELECT DISTINCT contract_id, contract_type, delivery_start
@@ -57,10 +57,10 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
     
     for index, c_row in enumerate(contracts):
         cid = c_row.contract_id
-        c_type = c_row.contract_type # 获取类型 (PH/QH)
+        ctype = c_row.contract_type 
 
         delivery_start = c_row.delivery_start
-        duration_min = 60 if c_row.contract_type == 'PH' else 15
+        duration_min = 60 if ctype == 'PH' else 15
         delivery_end = delivery_start + timedelta(minutes=duration_min)
         
         open_ts, close_ts = get_trading_window(delivery_start)
@@ -69,14 +69,22 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
 
         df = feature_engine.get_contract_features(db, cid, area)
         if df.empty: continue
-
-        engine = BacktestEngine(df, close_ts_naive, force_close_minutes, enable_slippage, contract_type=c_type)
+            
+        engine = BacktestEngine(
+            df, 
+            close_ts_naive, 
+            force_close_minutes, 
+            enable_slippage,
+            contract_type=ctype
+        )
         engine.run(StrategyClass, **kwargs)
         
         if engine.current_position != 0:
             engine.execute_order(0, reason="EOF_FORCE_CLOSE")
 
-        history_df = pd.DataFrame(engine.history)
+        results_data = engine.get_results()
+        history_df = pd.DataFrame(results_data['history'])
+
         if history_df.empty: continue
 
         final_pnl = history_df.iloc[-1]['equity']
@@ -96,8 +104,6 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
             
         chart_data = []
         for _, t in history_df.iterrows():
-            # === 核心修改：无条件透传所有分钟数据 ===
-            # 即使 volume=0，也要传 OHLC，保持图表连续性
             ts_seconds = int(t['time'].timestamp())
             item = {
                 "t": ts_seconds,
@@ -112,6 +118,7 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
             }
             chart_data.append(item)
 
+        # 【核心修改】移除 round，保留原始精度
         contract_results.append({
             "contract_id": cid,
             "type": c_row.contract_type,
@@ -119,9 +126,10 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
             "delivery_end": delivery_end.strftime('%H:%M'),
             "open_time": open_ts_naive.strftime('%Y-%m-%d %H:%M'),
             "close_time": close_ts_naive.strftime('%Y-%m-%d %H:%M'),
-            "pnl": round(safe_float(final_pnl), 2),
+            "pnl": safe_float(final_pnl), # No round
             "trade_count": len(trade_records),
-            "slippage": round(safe_float(engine.total_slippage_cost), 2),
+            "slippage": safe_float(engine.total_slippage_cost), # No round
+            "fees": safe_float(results_data.get('total_fees', 0)), # No round
             "details": trades_detail, 
             "chart": chart_data      
         })
@@ -144,26 +152,21 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
                 "pnl": c['pnl'],
                 "cnt": c['trade_count'],
                 "slip": c['slippage'],
+                "fees": c.get('fees', 0),
                 "txs": c['details']
             })
-        # 提取参数 (去掉系统参数，只留策略参数)
-        # 注意：kwargs 已经被 pop 过了 force_close_minutes 等，剩下的就是 rules 等
-        # 我们最好把 force_close_minutes 等关键风控参数也存进去
+        
         snapshot_params = kwargs.copy()
         snapshot_params['force_close_minutes'] = force_close_minutes
         snapshot_params['enable_slippage'] = enable_slippage
-        # 刚才 pop 出去的参数，如果想存，得手动加回来，或者在 pop 之前备份
-        # 这里简单处理，假设 kwargs 里剩下的就是核心策略参数 (rules)
         
         record = BacktestRecord(
             id=str(uuid.uuid4()),
             strategy_name=strategy_name,
             area=area,
-            start_date=start_date,
-            end_date=end_date,
-            params=snapshot_params, # 存入 JSON
-            
-            # 核心指标
+            start_date=original_start,
+            end_date=original_end,
+            params=snapshot_params,
             total_pnl=summary['total_pnl'],
             sharpe_ratio=summary['sharpe_ratio'],
             max_drawdown=summary['max_drawdown'],
@@ -174,11 +177,9 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
         )
         db.add(record)
         db.commit()
-        logger.info(f"💾 回测快照已保存: {record.id}")
         
     except Exception as e:
-        logger.error(f"❌ 保存回测快照失败: {e}")
-        # 不影响主流程返回
+        logger.error(f"Save snapshot failed: {e}")
 
     df_res = pd.DataFrame(contract_results)
     df_res.sort_values(by='delivery_start', inplace=True)
@@ -196,15 +197,22 @@ def calculate_quant_metrics(contract_results):
     if not contract_results: return {}
     df = pd.DataFrame(contract_results)
     
-    total_pnl = df['pnl'].sum()
+    # 【核心修改】使用 Decimal 进行聚合，防止 sum() 引入浮点误差
+    def decimal_sum(series):
+        return float(sum(Decimal(str(x)) for x in series))
+
+    total_pnl = decimal_sum(df['pnl'])
+    
     total_trades = df['trade_count'].sum()
     winning_trades = len(df[df['pnl'] > 0])
     win_rate = (winning_trades / len(df)) * 100 if len(df) > 0 else 0
     
-    gross_profit = df[df['pnl'] > 0]['pnl'].sum()
-    gross_loss = abs(df[df['pnl'] < 0]['pnl'].sum())
+    # PnL 分组聚合也要用 Decimal
+    gross_profit = float(sum(Decimal(str(x)) for x in df[df['pnl'] > 0]['pnl']))
+    gross_loss = abs(float(sum(Decimal(str(x)) for x in df[df['pnl'] < 0]['pnl'])))
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else 999.0 
     
+    # 回撤计算 (保留 float，因为 cumsum/max 相对不敏感且 Decimal 性能较差)
     if not df.empty and 'close_time' in df.columns:
         df_sorted = df.sort_values(by='close_time') 
         cumulative_pnl = df_sorted['pnl'].cumsum()
@@ -218,14 +226,15 @@ def calculate_quant_metrics(contract_results):
     std_return = df['pnl'].std()
     sharpe_ratio = (avg_return / std_return) if std_return > 0 else 0
     
+    # 返回完整精度
     return {
-        "total_pnl": round(safe_float(total_pnl), 2),
-        "win_rate": round(safe_float(win_rate), 1),
-        "profit_factor": round(safe_float(profit_factor), 2),
-        "max_drawdown": round(safe_float(max_drawdown), 2),
-        "sharpe_ratio": round(safe_float(sharpe_ratio), 3),
+        "total_pnl": total_pnl,
+        "win_rate": round(win_rate, 2), # Win rate 百分比可以保留2位
+        "profit_factor": round(profit_factor, 2),
+        "max_drawdown": max_drawdown,
+        "sharpe_ratio": round(sharpe_ratio, 3),
         "trade_count": int(total_trades),
-        "max_profit": round(safe_float(df['pnl'].max()), 2),
-        "max_loss": round(safe_float(df['pnl'].min()), 2),
+        "max_profit": df['pnl'].max(),
+        "max_loss": df['pnl'].min(),
         "contract_count": len(df)
     }

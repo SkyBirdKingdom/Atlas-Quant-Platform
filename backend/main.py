@@ -252,7 +252,7 @@ def reproduce_contract_result(record_id: str, contract_id: str, db: Session = De
         if actions:
             last_action = actions[-1]
             item['a'] = last_action['action'] # BUY / SELL / FORCE_CLOSE
-            # item['s'] = last_action['signal']
+            item['s'] = last_action.get('signal', '')
             
         chart_data.append(item)
 

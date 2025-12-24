@@ -26,7 +26,7 @@
           <div class="h-metrics">
             <div class="h-metric" :class="rec.total_pnl >= 0 ? 'text-up' : 'text-down'">
               <span class="label">PnL</span>
-              <span class="value">{{ rec.total_pnl }}</span>
+              <span class="value">{{ rec.total_pnl.toFixed(2) }}</span>
             </div>
             <div class="h-metric">
               <span class="label">Sharpe</span>
@@ -34,7 +34,7 @@
             </div>
             <div class="h-metric">
               <span class="label">DD</span>
-              <span class="value text-down">{{ rec.max_drawdown }}</span>
+              <span class="value text-down">{{ rec.max_drawdown.toFixed(2) }}</span>
             </div>
           </div>
           
@@ -196,7 +196,7 @@
           <div class="stat-item main-stat">
             <div class="stat-label">累计净利润 (Total PnL)</div>
             <div class="stat-value huge" :class="summary.total_pnl >= 0 ? 'text-up' : 'text-down'">
-              {{ summary.total_pnl }} <span class="unit">€</span>
+              {{ summary.total_pnl.toFixed(2) }} <span class="unit">€</span>
             </div>
           </div>
           <div class="stat-divider"></div>
@@ -227,7 +227,7 @@
           <div class="stat-group">
              <div class="sub-stat">
                <span class="sub-label">最大回撤:</span>
-               <span class="sub-value text-down">{{ summary.max_drawdown }} €</span>
+               <span class="sub-value text-down">{{ summary.max_drawdown.toFixed(2) }} €</span>
              </div>
              <div class="sub-stat">
                <span class="sub-label">合约胜率:</span>
@@ -565,12 +565,24 @@ const renderDetailChart = (contract) => {
           color: d.c >= d.o ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'
         });
 
-        if (d.a === 'BUY') {
-          markers.push({ time: ts, position: 'belowBar', color: '#67c23a', shape: 'arrowUp', text: 'B' });
-        } else if (d.a === 'SELL') {
-          markers.push({ time: ts, position: 'aboveBar', color: '#f56c6c', shape: 'arrowDown', text: 'S' });
-        } else if (d.a === 'FORCE_CLOSE') {
-          markers.push({ time: ts, position: 'aboveBar', color: '#7b1fa2', shape: 'arrowDown', text: 'F' });
+        // 【修改】标记逻辑
+        if (d.s === 'FORCE_CLOSE') {
+            // 强平信号
+            const text = d.a === 'BUY' ? 'F_B' : 'F_S';
+            // 强平通常用紫色表示，箭头根据买卖方向
+            const shape = d.a === 'BUY' ? 'arrowUp' : 'arrowDown';
+            const position = d.a === 'BUY' ? 'belowBar' : 'aboveBar';
+            markers.push({ time: ts, position: position, color: '#7b1fa2', shape: shape, text: text });
+        } 
+        else if (d.a === 'FORCE_CLOSE') {
+            // 兼容旧数据
+            markers.push({ time: ts, position: 'aboveBar', color: '#7b1fa2', shape: 'arrowDown', text: 'F' });
+        }
+        else if (d.a === 'BUY') {
+            markers.push({ time: ts, position: 'belowBar', color: '#67c23a', shape: 'arrowUp', text: 'B' });
+        } 
+        else if (d.a === 'SELL') {
+            markers.push({ time: ts, position: 'aboveBar', color: '#f56c6c', shape: 'arrowDown', text: 'S' });
         }
     } else {
        // Whitespace
