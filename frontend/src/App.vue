@@ -59,6 +59,16 @@
         <BacktestLab />
       </el-tab-pane>
 
+      <el-tab-pane name="Live Trader" label="🧪 实盘交易">
+        <template #label>
+          <span class="custom-tabs-label">
+            <el-icon><TrendCharts /></el-icon>
+            <span>实盘交易</span>
+          </span>
+        </template>
+        <LiveDashboard />
+      </el-tab-pane>
+
       <el-tab-pane name="data" label="💾 数据同步中心">
         <template #label>
           <span class="custom-tabs-label">
@@ -85,6 +95,7 @@ import DataManager from './components/DataManager.vue';
 import BacktestLab from './components/BacktestLab.vue';
 import MarketAnalysis from './components/MarketAnalysis.vue';
 import OptimizationLab from './components/OptimizationLab.vue';
+import LiveDashboard from './components/LiveDashboard.vue';
 
 // 默认显示第一个 Tab
 const activeTab = ref('backtest');

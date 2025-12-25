@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Boolean, Index
 from .database import Base
 from datetime import datetime
 
@@ -79,3 +79,90 @@ class BacktestRecord(Base):
     # 存储格式: [{"id": "NX_1", "pnl": 100, "count": 5}, ...]
     # 不存 K 线和详细 Logs，只存结果
     contract_stats = Column(JSON)
+
+class OrderFlowTick(Base):
+    """
+    【订单流逐笔数据】
+    记录每一次挂单、撤单、成交的微观事件。
+    数据来源：Nord Pool Orders API (Intraday orders / revisions)
+    """
+    __tablename__ = "order_flow_ticks"
+
+    tick_id = Column(String, primary_key=True, index=True) # UUID
+    contract_id = Column(String, index=True, nullable=False)
+    contract_name = Column(String, nullable=True)
+    delivery_start = Column(DateTime, nullable=True)
+    delivery_end = Column(DateTime, nullable=True)
+    delivery_area = Column(String, nullable=True, index=True)
+    
+    # 事件发生时间 (UpdatedTime from API)
+    timestamp = Column(DateTime, index=True, nullable=False)
+    
+    # 价格与量
+    price = Column(Float)
+    volume = Column(Float)
+    remaining_volume = Column(Float)
+    
+    # 订单方向: 'BUY' (买单), 'SELL' (卖单)
+    side = Column(String)
+    
+    # 事件类型 (映射 API 的 action 字段)
+    # 枚举: 'TRADE' (成交), 'NEW' (挂单), 'CANCEL' (撤单/删除), 'UPDATE' (修改)
+    # 对应 API Action: 
+    #   TRADE  <- PartialExecution, FullExecution
+    #   NEW    <- UserAdded
+    #   CANCEL <- UserDeleted, SystemDeleted
+    #   UPDATE <- UserModified, SystemModified
+    type = Column(String, index=True)
+    
+    # 原始动作 (保留 API 原文字段，方便 debug)
+    raw_action = Column(String)
+    
+    # 主动方 (Aggressor Side) - 仅对 TRADE 类型有效
+    # 'BUY': 主动买入吃单, 'SELL': 主动卖出砸盘, 'NONE': 无法判断
+    # 需要在 Fetcher 逻辑中通过对比 OrderBook 推算得出
+    aggressor_side = Column(String, nullable=True)
+    
+    # 关联信息
+    order_id = Column(String, index=True)
+    revision_number = Column(Integer)
+
+    # 建立联合索引以加速按时间回放
+    __table_args__ = (
+        Index('idx_orderflow_main', 'delivery_area', 'contract_id', 'timestamp'),
+    )
+
+class OrderBookSnapshot(Base):
+    """
+    【订单簿快照】
+    记录某一时刻完整的买卖盘口状态。
+    数据来源：Nord Pool Orders API (isSnapshot=true) 或 本地重构计算
+    """
+    __tablename__ = "order_book_snapshots"
+
+    snapshot_id = Column(String, primary_key=True, index=True) # UUID
+    contract_id = Column(String, index=True, nullable=False)
+
+    contract_name = Column(String)
+    delivery_area = Column(String, index=True)
+    delivery_start = Column(DateTime)
+    delivery_end = Column(DateTime)
+    
+    # 快照时间点
+    timestamp = Column(DateTime, index=True, nullable=False)
+    
+    # 版本号 (对应 API revision)
+    revision_number = Column(Integer)
+    
+    # 买盘列表 [[price, vol], [price, vol], ...] 按价格降序
+    bids = Column(JSON)
+    
+    # 卖盘列表 [[price, vol], [price, vol], ...] 按价格升序
+    asks = Column(JSON)
+    
+    # 辅助字段：是否为 API 原生快照 (还是本地推算的)
+    is_native = Column(Boolean, default=False)
+
+    __table_args__ = (
+        Index('idx_ob_main', 'delivery_area', 'contract_id', 'timestamp'),
+    )

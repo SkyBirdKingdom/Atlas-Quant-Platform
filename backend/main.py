@@ -3,7 +3,8 @@ from pydantic import BaseModel
 from typing import List
 from sqlalchemy.orm import Session
 from .database import get_db, Base, engine
-from .services import fetcher, analyzer, stats, backtest, market_data, kline_generator, feature_engine, live_runner, optimizer # 导入刚才写的服务
+from .services import fetcher, analyzer, stats, backtest, market_data, kline_generator, feature_engine, optimizer # 导入刚才写的服务
+from .services import live_trader
 from fastapi.middleware.cors import CORSMiddleware # 引入 CORS
 import uuid
 from contextlib import asynccontextmanager
@@ -17,6 +18,7 @@ from .utils.time_helper import get_trading_window
 from datetime import timezone, timedelta
 from typing import Dict, Any
 from .models import BacktestRecord
+import json
 
 # --- 生命周期管理 ---
 @asynccontextmanager
@@ -40,6 +42,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+STATE_FILE = "live_trader_state.json"
 
 class AnalyzeRequest(BaseModel):
     start_date: str # "2025-12-01"
@@ -82,6 +86,93 @@ class OptimizeRequest(BaseModel):
 task_status = {}
 backtest_tasks = {}
 optimization_tasks = {}
+
+@app.get("/api/live/status")
+def get_live_status():
+    """
+    获取实盘/模拟盘的最新状态
+    直接读取 LiveTrader 生成的 JSON 快照
+    """
+    if not os.path.exists(STATE_FILE):
+        return {
+            "status": "stopped",
+            "data": None,
+            "msg": "暂无运行状态 (请等待下一次心跳或手动启动)"
+        }
+    
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.load(f)
+        
+        # 补充一些元数据
+        updated_at = state.get("_updated_at", "")
+        mode = "PAPER" # 默认为模拟，后续可从 state 或全局配置读取
+        
+        return {
+            "status": "running",
+            "mode": mode,
+            "updated_at": updated_at,
+            "data": state
+        }
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
+
+class LiveConfig(BaseModel):
+    area: str = "SE3"
+    mode: str = "PAPER" # PAPER or LIVE
+    active: bool = True
+
+@app.post("/api/live/config")
+def update_live_config(config: LiveConfig):
+    """
+    更新实盘配置 (启停、切换模式)
+    """
+    # 1. 更新全局调度器配置
+    # 这里我们简单做：重启 scheduler job 或者更新内存中的 global instance
+    # Phase 1: 简单重启 Job
+    try:
+        from .scheduler import scheduler, run_live_trading_job
+        from .services.live_trader import LiveTrader
+        
+        # 停止旧任务
+        if scheduler.get_job('live_trading_job'):
+            scheduler.remove_job('live_trading_job')
+            
+        if config.active:
+            # 更新全局实例的模式 (需在 scheduler.py 或 live_trader.py 中暴露修改接口)
+            # 这里演示简单的 "重新添加任务"
+            # 注意：实际生产中建议使用数据库存储配置
+            scheduler.add_job(
+                run_live_trading_job, 
+                'interval', 
+                minutes=15, 
+                id='live_trading_job',
+                replace_existing=True
+            )
+            return {"status": "success", "msg": f"实盘任务已启动 ({config.mode})"}
+        else:
+            return {"status": "success", "msg": "实盘任务已暂停"}
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/live/logs")
+def get_live_logs(lines: int = 50):
+    """
+    获取最近的系统日志 (用于前端监控报错)
+    """
+    # base_dir = os.path.dirname(os.path.abspath(__file__))
+    log_file = os.path.join("logs", "app.log")
+    if not os.path.exists(log_file):
+        return {"logs": []}
+    
+    try:
+        with open(log_file, "r") as f:
+            # 读取最后 N 行
+            all_lines = f.readlines()
+            return {"logs": all_lines[-lines:]}
+    except Exception:
+        return {"logs": ["无法读取日志文件"]}
 
 @app.post("/api/backtest/optimize")
 def run_optimization_async(req: OptimizeRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):

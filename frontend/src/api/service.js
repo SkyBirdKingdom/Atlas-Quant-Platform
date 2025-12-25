@@ -55,4 +55,8 @@ export const getBacktestOptimize = (data) => api.post('/backtest/optimize', data
 
 export const getOptimizationStatus = (taskId) => api.get(`/backtest/optimize/status/${taskId}`);
 
+export const getLiveStatus = () => api.get('/live/status')
+
+export const getLiveLogs = () => api.get('/live/logs')
+
 export default api;

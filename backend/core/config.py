@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     # 2. Nord Pool API (可选)
     NORDPOOL_USER: str = ""
     NORDPOOL_PASSWORD: str = ""
+    NORDPOOL_API_URL: str = "https://api.nordpoolgroup.com"
     
     # 3. App 设置
     API_V1_STR: str = "/api"

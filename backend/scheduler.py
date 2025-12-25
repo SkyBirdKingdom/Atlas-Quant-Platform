@@ -3,11 +3,16 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.orm import Session
 from .database import SessionLocal
 from .services import fetcher, kline_generator, live_runner
+from .services.live_trader import LiveTrader
 import logging
 from datetime import datetime, timedelta, timezone
 from .models import MarketCandle
 
 logger = logging.getLogger("JobScheduler")
+
+# 创建一个全局实例 (保持状态)
+# 默认启动为 PAPER (模拟盘) 模式
+trader_instance = LiveTrader(area="SE3", mode="PAPER")
 
 # 创建调度器实例
 scheduler = BackgroundScheduler()
@@ -107,6 +112,15 @@ def kline_job_function():
     finally:
         db.close()
 
+def run_live_trading_job():
+    """
+    实盘/模拟盘 调度任务
+    建议每 15 分钟执行一次
+    """
+    logger.info("⏰ 触发实盘循环任务...")
+    trader_instance.run_tick()
+
+
 def start_scheduler():
     if not scheduler.running:
         # 添加任务：每 1 小时执行一次
@@ -129,6 +143,14 @@ def start_scheduler():
             replace_existing=True,
             misfire_grace_time=3600,
             coalesce=True
+        )
+
+        scheduler.add_job(
+            run_live_trading_job, 
+            'interval', 
+            minutes=1, 
+            id='live_trading_job',
+            replace_existing=True
         )
 
         # 不加 trigger 参数，默认就是 "DateTrigger(run_date=now)"，即立即执行一次

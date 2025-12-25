@@ -189,3 +189,5 @@ def get_latest_features(db: Session, area: str, lookback=500):
     df.ta.strategy(StandardStrategy)
     
     return df
+
+get_latest_features_df = get_latest_features
