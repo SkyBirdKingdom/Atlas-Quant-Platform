@@ -7,6 +7,7 @@ from .services.live_trader import LiveTrader
 import logging
 from datetime import datetime, timedelta, timezone
 from .models import MarketCandle
+from .services.order_flow.manager import OrderFlowManager
 
 logger = logging.getLogger("JobScheduler")
 
@@ -120,6 +121,18 @@ def run_live_trading_job():
     logger.info("⏰ 触发实盘循环任务...")
     trader_instance.run_tick()
 
+def order_flow_sync_job():
+    """
+    【新增】订单流自动同步任务
+    """
+    db = SessionLocal()
+    try:
+        manager = OrderFlowManager(db)
+        manager.sync_all()
+    except Exception as e:
+        logger.error(f"Order Flow Sync Job Error: {e}")
+    finally:
+        db.close()
 
 def start_scheduler():
     if not scheduler.running:
@@ -147,10 +160,20 @@ def start_scheduler():
 
         scheduler.add_job(
             run_live_trading_job, 
-            'interval', 
-            minutes=1, 
-            id='live_trading_job',
-            replace_existing=True
+            trigger=IntervalTrigger(minutes=5), 
+            id="live_trading_job",
+            replace_existing=True,
+            max_instances=1, # 强制单实例
+            misfire_grace_time=300
+        )
+
+        scheduler.add_job(
+            order_flow_sync_job,
+            id="startup_order_flow_sync", # ID 必须和上面的不一样
+            name="Startup Order Flow Sync",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True
         )
 
         # 不加 trigger 参数，默认就是 "DateTrigger(run_date=now)"，即立即执行一次
@@ -165,6 +188,15 @@ def start_scheduler():
             kline_job_function,
             id="startup_kline_immediate",
             name="Startup Kline Immediate",
+            replace_existing=True,
+            misfire_grace_time=3600
+        )
+
+        scheduler.add_job(
+            order_flow_sync_job,
+            trigger=IntervalTrigger(hours=1), # 或 minutes=30
+            id="auto_order_flow_sync",
+            name="Order Flow Auto Sync",
             replace_existing=True,
             misfire_grace_time=3600
         )

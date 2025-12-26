@@ -6,7 +6,7 @@ import logging
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.database import SessionLocal, init_db
+from backend.database import SessionLocal
 from backend.services.order_flow import OrderFlowFetcher, OrderFlowProcessor, OrderFlowService
 from backend.core.logger import setup_logging
 
@@ -16,7 +16,7 @@ logger = logging.getLogger("TestScript")
 def main():
     logger.info("🚀 开始订单流数据集成测试 (流式版)...")
     
-    init_db() 
+    # init_db() 
     db = SessionLocal()
     
     try:
@@ -27,7 +27,7 @@ def main():
         area = "SE3"
         # 故意设置一个较长的时间段来测试切片 (例如过去5小时，触发切片)
         end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(hours=5)
+        start_time = datetime(2025, 12, 23, 12, 0, 0, tzinfo=timezone.utc)
         
         logger.info(f"测试范围: {area} | {start_time.isoformat()} -> {end_time.isoformat()}")
         
@@ -38,7 +38,7 @@ def main():
         for chunk_idx, raw_data in enumerate(fetcher.fetch_recent_orders(area, start_time, end_time)):
             
             # 1. 立即处理
-            ticks = processor.process_recent_orders_response(raw_data)
+            ticks = processor.process_recent_orders_response(area, raw_data)
             logger.info(f"📦 片段 {chunk_idx+1}: 解析出 {len(ticks)} 条数据")
             
             if ticks:
@@ -66,8 +66,12 @@ def export_order_flow_ticks_to_csv(area: str, output_file: str):
     import pandas as pd
     db = SessionLocal()
     try:
+        start = datetime(2025, 12, 23, 23, 0, 0, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
         from backend.models import OrderFlowTick
-        query = db.query(OrderFlowTick).filter(OrderFlowTick.delivery_area == area)
+        query = db.query(OrderFlowTick).filter(OrderFlowTick.delivery_area == area,
+                                                OrderFlowTick.delivery_start >= start,
+                                                OrderFlowTick.delivery_start < end)
         df = pd.read_sql(query.statement, db.bind)
         df.to_csv(output_file, index=False)
         logger.info(f"✅ 已导出 {len(df)} 条 Order Flow Tick 到文件: {output_file}")
@@ -75,5 +79,5 @@ def export_order_flow_ticks_to_csv(area: str, output_file: str):
         db.close()
 
 if __name__ == "__main__":
-    export_order_flow_ticks_to_csv("SE3", "order_flow_ticks_se3_20251223.csv")
+    export_order_flow_ticks_to_csv("SE3", "order_flow_ticks_20251224.csv")
     # main()

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Boolean, Index
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Boolean, Index, UniqueConstraint
 from .database import Base
 from datetime import datetime
 
@@ -130,6 +130,7 @@ class OrderFlowTick(Base):
     # 建立联合索引以加速按时间回放
     __table_args__ = (
         Index('idx_orderflow_main', 'delivery_area', 'contract_id', 'timestamp'),
+        UniqueConstraint('contract_id', 'delivery_area', 'revision_number', 'order_id', 'raw_action', name='uq_tick_business_key'),
     )
 
 class OrderBookSnapshot(Base):
@@ -166,3 +167,24 @@ class OrderBookSnapshot(Base):
     __table_args__ = (
         Index('idx_ob_main', 'delivery_area', 'contract_id', 'timestamp'),
     )
+
+class OrderFlowSyncState(Base):
+    """
+    【新增】订单流同步状态表
+    用于断点续传，记录每个区域的历史数据抓取到了哪个时间点
+    """
+    __tablename__ = "order_flow_sync_state"
+    
+    area = Column(String, primary_key=True)
+    
+    # 历史归档进度 (对应 API A, T+1)
+    # 比如: 2025-01-01T00:00:00，表示此时间之前的数据已通过 Revisions 接口完美归档
+    last_archived_time = Column(DateTime)
+    
+    # 实时抓取进度 (对应 API B, T+20min)
+    # 比如: 2025-10-20T14:30:00，表示此时间之前的 Intraday Orders 已入库
+    last_realtime_time = Column(DateTime)
+    
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    status = Column(String, default="idle")
+    last_error = Column(Text, nullable=True)

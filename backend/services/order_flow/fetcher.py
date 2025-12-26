@@ -99,11 +99,10 @@ class OrderFlowFetcher:
         chunk_size = timedelta(hours=4)
         current_start = start_time
         
-        logger.info(f"开始流式获取订单流: {area} [{start_time} -> {end_time}]")
-        
         count = 0
         while current_start < end_time:
             current_end = min(current_start + chunk_size, end_time)
+            logger.info(f"开始流式获取订单流: {area} [{current_start} -> {current_end}]")
             
             params = {
                 "area": area,
