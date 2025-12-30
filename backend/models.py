@@ -32,6 +32,16 @@ class FetchState(Base):
     status = Column(String, default="idle")  # 'running', 'error', 'ok'
     last_error = Column(Text, nullable=True) # 具体的报错信息
 
+class KlineGenState(Base):
+    """
+    【新增】K线生成进度表
+    替代原本通过 MAX(timestamp) 推断进度的方式，彻底消除 Gap Candle
+    """
+    __tablename__ = "kline_gen_state"
+    area = Column(String, primary_key=True)
+    last_generated_time = Column(DateTime) # 记录已经处理到的时间点
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
 class MarketCandle(Base):
     __tablename__ = "market_candles"
 

@@ -87,6 +87,34 @@ task_status = {}
 backtest_tasks = {}
 optimization_tasks = {}
 
+@app.post("/api/simulation/legacy-run")
+def run_legacy_simulation(
+    area: str, 
+    start_date: str, 
+    end_date: str, 
+    config: Dict[str, Any], # 允许前端传这个 JSON 配置
+    db: Session = Depends(get_db)
+):
+    """
+    运行旧版策略的快速模拟 (Fast Simulation)
+    """
+    try:
+        # 调用回测服务，使用 LegacyNordPool 策略
+        result = backtest.run_strategy_backtest(
+            db=db,
+            start_date=start_date,
+            end_date=end_date,
+            area=area,
+            strategy_name="LegacyNordPool", # 指定使用移植版策略
+            strategy_params=config.get('strategy_params', {}), # 传入前端配置
+            enable_tick_replay=True, # 强制开启 Tick 回放
+            initial_capital=config.get('initial_capital', 50000.0)
+        )
+        return result
+    except Exception as e:
+        # logger.error(f"Simulation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/live/status")
 def get_live_status():
     """

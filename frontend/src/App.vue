@@ -69,6 +69,16 @@
         <LiveDashboard />
       </el-tab-pane>
 
+      <el-tab-pane name="Fast Simulation" label="⚡️ 快速模拟">
+        <template #label>
+          <span class="custom-tabs-label">
+            <el-icon><TrendCharts /></el-icon>
+            <span>快速模拟</span>
+          </span>
+        </template>
+        <FastSimulation />
+      </el-tab-pane>
+
       <el-tab-pane name="data" label="💾 数据同步中心">
         <template #label>
           <span class="custom-tabs-label">
@@ -96,6 +106,7 @@ import BacktestLab from './components/BacktestLab.vue';
 import MarketAnalysis from './components/MarketAnalysis.vue';
 import OptimizationLab from './components/OptimizationLab.vue';
 import LiveDashboard from './components/LiveDashboard.vue';
+import FastSimulation from './components/FastSimulation.vue';
 
 // 默认显示第一个 Tab
 const activeTab = ref('backtest');

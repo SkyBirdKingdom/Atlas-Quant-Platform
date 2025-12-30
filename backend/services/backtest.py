@@ -11,6 +11,7 @@ from decimal import Decimal
 from ..strategy.engine import TradeEngine
 from ..strategy.adapter import LegacyStrategyAdapter
 from ..strategy.strategies import DynamicConfigStrategy
+from ..strategy.legacy_strategies import LegacyNordPoolStrategy
 
 from . import feature_engine
 from ..utils.time_helper import get_trading_window
@@ -52,6 +53,7 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
 
     StrategyClass = {
         "DynamicConfig": DynamicConfigStrategy, 
+        "LegacyNordPool": LegacyNordPoolStrategy,
     }.get(strategy_name, DynamicConfigStrategy)
 
     contract_results = [] 
@@ -151,6 +153,30 @@ def run_strategy_backtest(db: Session, start_date: str, end_date: str, area: str
 
     if not contract_results:
         return {"status": "empty", "msg": "无有效交易结果"}
+    
+    # 构造权益曲线 (用于前端画图)
+    # 假设 engine.history 记录了每一笔交易后的余额
+    # 我们将其重采样为每日/每小时数据
+    equity_curve = []
+    current_equity = 40000.0  # 初始资金
+    
+    # 将所有合约的交易历史合并并按时间排序
+    all_trades = []
+    for cid, res in engine.results.items():
+        for trade in res['history']:
+            all_trades.append(trade)
+    
+    all_trades.sort(key=lambda x: x['timestamp'])
+    
+    # 生成时间序列点
+    for trade in all_trades:
+        # 累加 PnL
+        current_equity += trade['realized_pnl'] - trade['commission']
+        equity_curve.append({
+            "time": trade['timestamp'].strftime("%Y-%m-%d %H:%M"),
+            "value": current_equity,
+            "pnl_change": trade['realized_pnl']
+        })
     
     summary = calculate_quant_metrics(contract_results)
 
