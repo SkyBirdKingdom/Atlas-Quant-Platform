@@ -13,7 +13,7 @@ from ..core.config import settings
 logger = logging.getLogger("NordPoolFetcher")
 
 # 配置
-AUTO_AREAS = ["SE1", "SE2", "SE3", "SE4"]
+AUTO_AREAS = ["SE3"]
 API_URL = "https://data-api.nordpoolgroup.com/api/v2/Intraday/Trades/ByDeliveryStart"
 
 # --- 1. 网络层：带自动重试的 API 请求 ---
@@ -58,75 +58,150 @@ def fetch_api_chunk(token, area, start_str, end_str):
 # --- 2. 数据处理与存储 ---
 
 def flatten_and_parse(raw_data, area):
+    """
+    解析 API 数据，将其扁平化。
+    关键逻辑：遍历 legs，只提取 belongs to area 的 leg 生成记录。
+    """
     rows = []
-    volume_unit = raw_data.get('volumeUnit')
     
-    for contract in raw_data.get('contracts', []) or []:
-        base = {
+    # API 返回结构: contracts -> trades -> legs
+    contracts = raw_data.get('contracts', []) or []
+    
+    for contract in contracts:
+        # 合约层级信息
+        contract_base = {
             'contractId': contract.get('contractId'),
             'contractName': contract.get('contractName'),
             'deliveryStart': contract.get('deliveryStart'),
             'deliveryEnd': contract.get('deliveryEnd'),
         }
-        for trade in contract.get('trades', []) or []:
-            # 过滤：只保留 belongs to area 的数据
-            # 或者是 legs 里包含该 area
+        
+        trades = contract.get('trades', []) or []
+        for trade in trades:
+            # 交易层级信息
+            trade_base = {
+                'tradeId': trade.get('tradeId'),
+                'tradeTime': trade.get('tradeTime'),
+                'tradeUpdatedAt': trade.get('tradeUpdatedAt'),
+                'tradeState': trade.get('tradeState'),
+                'revisionNumber': trade.get('revisionNumber'),
+                'price': trade.get('price'),
+                'volume': trade.get('volume'),
+                'tradePhase': trade.get('tradePhase'),
+                'crossPx': trade.get('crossPx'),
+            }
+            
             legs = trade.get('legs') or []
-            target_area_found = False
             
-            # 如果没有 legs (单边交易?) 或者 legs 里有当前区域
-            if not legs:
-                target_area_found = True # 假设 API 筛选过了
-            else:
-                for leg in legs:
-                    if leg.get('deliveryArea') == area:
-                        target_area_found = True
-                        break
-            
-            if target_area_found:
+            # --- 核心修改：Leg 拆解 ---
+            # 只有当 leg 的 deliveryArea 等于当前抓取的 area 时，才生成记录
+            # 这样当抓取 SE2 时存 SE2 的腿，抓取 SE3 时存 SE3 的腿，互不冲突
+            for leg in legs:
+                leg_area = leg.get('deliveryArea')
+                
                 rows.append({
-                    **base,
-                    'tradeId': trade.get('tradeId'),
-                    'tradeTime': trade.get('tradeTime'),
-                    'price': trade.get('price'),
-                    'volume': trade.get('volume'),
-                    'deliveryArea': area 
+                    **contract_base,
+                    **trade_base,
+                    'deliveryArea': leg_area,
+                    'referenceOrderId': leg.get('referenceOrderId'),
+                    'tradeSide': leg.get('tradeSide') # Buy or Sell
                 })
+            
+            # 兼容性处理：如果 API 返回老旧数据没有 legs 字段，但属于该区域
+            # (这种情况较少见，但为了健壮性保留)
+            if not legs:
+                # 这里假设如果没有 legs 细分，就当作一条通用记录，
+                # 但主键需要 tradeSide，我们给个默认值 'Unknown' 防止报错
+                 rows.append({
+                    **contract_base,
+                    **trade_base,
+                    'deliveryArea': area,
+                    'referenceOrderId': None,
+                    'tradeSide': 'Unknown' 
+                })
+
     return rows
 
 def save_chunk_to_db(db: Session, data_list: list):
     if not data_list: return
     
     df = pd.DataFrame(data_list)
-    for col in ['deliveryStart', 'deliveryEnd', 'tradeTime']:
-        df[col] = pd.to_datetime(df[col], format='mixed')
+    
+    # 1. 时间格式转换
+    time_cols = ['deliveryStart', 'deliveryEnd', 'tradeTime', 'tradeUpdatedAt']
+    for col in time_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], format='mixed', errors='coerce')
 
-    df['duration_minutes'] = (df['deliveryEnd'] - df['deliveryStart']).dt.total_seconds() / 60
-    conditions = [(abs(df['duration_minutes']-60)<1), (abs(df['duration_minutes']-15)<1)]
-    df['contract_type'] = np.select(conditions, ['PH', 'QH'], default='Other')
+    # 2. 计算 duration 和 contract_type
+    if 'deliveryStart' in df.columns and 'deliveryEnd' in df.columns:
+        df['duration_minutes'] = (df['deliveryEnd'] - df['deliveryStart']).dt.total_seconds() / 60
+        conditions = [
+            (abs(df['duration_minutes'] - 60) < 1), 
+            (abs(df['duration_minutes'] - 15) < 1)
+        ]
+        df['contract_type'] = np.select(conditions, ['PH', 'QH'], default='Other')
+    else:
+        df['duration_minutes'] = 0
+        df['contract_type'] = 'Unknown'
 
     records = df.to_dict(orient='records')
     
-    # 映射字段名
     db_records = []
     for r in records:
-        db_records.append({
-            "trade_id": r['tradeId'],
-            "contract_id": r['contractId'],
-            "contract_name": r['contractName'],
-            "price": r['price'],
-            "volume": r['volume'],
-            "delivery_area": r['deliveryArea'],
-            "delivery_start": r['deliveryStart'],
-            "delivery_end": r['deliveryEnd'],
-            "trade_time": r['tradeTime'],
-            "duration_minutes": r['duration_minutes'],
-            "contract_type": r['contract_type']
-        })
+        # 构建符合新模型的字典
+        db_record = {
+            # 复合主键字段
+            "trade_id": r.get('tradeId'),
+            "delivery_area": r.get('deliveryArea'),
+            "trade_side": r.get('tradeSide'),
+            
+            # 合约信息
+            "contract_id": r.get('contractId'),
+            "contract_name": r.get('contractName'),
+            "delivery_start": r.get('deliveryStart'),
+            "delivery_end": r.get('deliveryEnd'),
+            "duration_minutes": r.get('duration_minutes'),
+            "contract_type": r.get('contract_type'),
+            
+            # 交易信息
+            "price": r.get('price'),
+            "volume": r.get('volume'),
+            "trade_time": r.get('tradeTime'),
+            "trade_updated_at": r.get('tradeUpdatedAt'),
+            
+            # 状态扩展字段
+            "trade_state": r.get('tradeState'),
+            "revision_number": r.get('revisionNumber'),
+            "trade_phase": r.get('tradePhase'),
+            "cross_px": r.get('crossPx'),
+            
+            # 订单腿信息
+            "reference_order_id": r.get('referenceOrderId'),
+            
+            # 入库时间
+            "created_at": datetime.utcnow()
+        }
+        db_records.append(db_record)
+
+    # 3. 执行 Upsert (Insert or Ignore/Update)
+    if not db_records: return
 
     stmt = insert(Trade).values(db_records)
-    stmt = stmt.on_conflict_do_nothing(index_elements=['trade_id'])
+    
+    # 这里的冲突检测必须包含所有的主键字段
+    stmt = stmt.on_conflict_do_update(
+        index_elements=['trade_id', 'delivery_area', 'trade_side'], # 复合主键冲突检测
+        set_={
+            "trade_updated_at": stmt.excluded.trade_updated_at,
+            "trade_state": stmt.excluded.trade_state,
+            "revision_number": stmt.excluded.revision_number,
+            "price": stmt.excluded.price,
+            "volume": stmt.excluded.volume
+        }
+    )
     db.execute(stmt)
+    db.commit()
 
 # --- 3. 状态管理 ---
 
@@ -269,3 +344,51 @@ def sync_all_areas(db: Session):
             # 这里 catch 住，保证 SE3 挂了不影响 SE4 继续跑
             continue
     logger.info("✅ 定时同步结束")
+
+def fetch_data_range(db: Session, areas: list, start_date: str, end_date: str):
+    """
+    手动补录指定时间段的数据，不影响全局同步状态
+    :param db: 数据库会话
+    :param areas: 区域代码列表 (SE3, SE4)
+    :param start_date: 开始时间 ISO (2025-01-01)
+    :param end_date: 结束时间 ISO
+    """
+    try:
+        current = datetime.fromisoformat(start_date.replace('Z', ''))
+        end = datetime.fromisoformat(end_date.replace('Z', ''))
+    except ValueError as e:
+        logger.error(f"时间格式错误: {e}")
+        raise ValueError("Invalid date format")
+
+    token = get_token()
+    total_chunks = 0
+    for area in areas:
+        logger.info(f"[{area}] 🚀 手动任务启动: {current} -> {end}")
+
+        while current < end:
+            # 手动任务允许跨度稍大，比如 24 小时
+            chunk_end = min(current + timedelta(hours=12), end)
+            
+            t_start = current.strftime('%Y-%m-%dT%H:%M:%SZ')
+            t_end = chunk_end.strftime('%Y-%m-%dT%H:%M:%SZ')
+            
+            try:
+                try:
+                    raw = fetch_api_chunk(token, area, t_start, t_end)
+                except PermissionError:
+                    token = get_token()
+                    raw = fetch_api_chunk(token, area, t_start, t_end)
+                
+                data = flatten_and_parse(raw, area)
+                if data:
+                    save_chunk_to_db(db, data)
+                    logger.info(f"[{area}] 手动入库 {len(data)} 条 ({t_start})")
+                
+                current = chunk_end
+                total_chunks += 1
+                
+            except Exception as e:
+                logger.error(f"[{area}] 手动抓取中断 {t_start}: {e}")
+                raise e
+            
+    return {"status": "success", "chunks_processed": total_chunks}

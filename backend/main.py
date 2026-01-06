@@ -531,7 +531,7 @@ def run_fetch_in_background(start, end, areas):
     from .database import SessionLocal
     db = SessionLocal()
     try:
-        fetcher.fetch_data_range(db, start, end, areas)
+        fetcher.fetch_data_range(db, areas, start, end)
         print(f"✅ 后台任务完成: {start} -> {end}")
     except Exception as e:
         print(f"❌ 后台任务出错: {e}")

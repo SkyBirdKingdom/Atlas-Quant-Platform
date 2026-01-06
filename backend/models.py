@@ -5,22 +5,38 @@ from datetime import datetime
 class Trade(Base):
     __tablename__ = "trades"
 
+    # --- 复合主键设计 ---
+    # 组合这三个字段作为主键，可以完美区分同一笔交易在不同区域、不同方向的记录
     trade_id = Column(String, primary_key=True, index=True)
-    
-    # --- 新增的关键合约信息 ---
-    contract_id = Column(String, index=True)   # 例如: NX_123456
-    contract_name = Column(String, index=True) # 例如: PH-20251201-01
-    
-    price = Column(Float)
-    volume = Column(Float)
-    delivery_area = Column(String, index=True)
-    
+    delivery_area = Column(String, primary_key=True, index=True) # SE3, SE2...
+    trade_side = Column(String, primary_key=True, index=True)    # Buy, Sell
+
+    # --- 合约基础信息 ---
+    contract_id = Column(String, index=True)
+    contract_name = Column(String, index=True)
     delivery_start = Column(DateTime, index=True)
     delivery_end = Column(DateTime, index=True)
-    trade_time = Column(DateTime, index=True)
-    
     duration_minutes = Column(Float)
-    contract_type = Column(String, index=True)
+    contract_type = Column(String, index=True) # PH, QH, Other
+
+    # --- 交易详细信息 ---
+    price = Column(Float)
+    volume = Column(Float)
+    trade_time = Column(DateTime, index=True)       # tradeTime
+    trade_updated_at = Column(DateTime, nullable=True) # tradeUpdatedAt
+    
+    # 状态与版本
+    trade_state = Column(String, nullable=True)    # Completed, Cancelled, Disputed
+    revision_number = Column(Integer, nullable=True)
+    trade_phase = Column(String, nullable=True)    # Continuous, Auction
+    cross_px = Column(Boolean, nullable=True)      # 是否跨交易所
+
+    # --- Leg (订单腿) 详细信息 ---
+    # referenceOrderId 可能为空（当跨交易所时，另一条腿可能没有ID）
+    reference_order_id = Column(String, nullable=True, index=True) 
+
+    # 辅助字段
+    created_at = Column(DateTime, nullable=True) # 记录入库时间
 
 class FetchState(Base):
     __tablename__ = "fetch_state"
