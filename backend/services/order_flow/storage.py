@@ -24,27 +24,26 @@ class OrderFlowService:
             data_list = []
             for t in ticks:
                 data_list.append({
-                    "tick_id": t.tick_id,
                     "contract_id": t.contract_id,
-                    "contract_name": t.contract_name,
                     "delivery_area": t.delivery_area,
-                    "delivery_start": t.delivery_start,
-                    "delivery_end": t.delivery_end,
                     "timestamp": t.timestamp,
+                    "priority_time": t.priority_time, # 新增字段
+                    "order_id": t.order_id,
+                    "revision_number": t.revision_number,
                     "price": t.price,
                     "volume": t.volume,
-                    "remaining_volume": t.remaining_volume,
                     "side": t.side,
-                    "type": t.type,
-                    "raw_action": t.raw_action,
-                    "aggressor_side": t.aggressor_side,
-                    "order_id": t.order_id,
-                    "revision_number": t.revision_number
+                    "state": t.state,
+                    "action": t.action,
+                    "is_snapshot": t.is_snapshot,     # 新增字段
+                    "is_deleted": t.is_deleted,       # 新增字段
+                    "source_type": t.source_type,
+                    "created_at": t.created_at
                 })
             
             # 使用 PostgreSQL 的 ON CONFLICT DO NOTHING
             stmt = insert(OrderFlowTick).values(data_list)
-            stmt = stmt.on_conflict_do_nothing(index_elements=['tick_id'])
+            stmt = stmt.on_conflict_do_nothing(constraint='uq_tick_entry')
             
             self.db.execute(stmt)
             self.db.commit()

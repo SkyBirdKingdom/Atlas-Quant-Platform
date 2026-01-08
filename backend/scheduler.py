@@ -16,6 +16,9 @@ logger = logging.getLogger("JobScheduler")
 # 默认启动为 PAPER (模拟盘) 模式
 trader_instance = LiveTrader(area="SE3", mode="PAPER")
 
+# 自动同步区域 (在此处配置，覆盖 Manager 默认设置)
+AUTO_AREAS = ["SE3"] 
+
 # 创建调度器实例
 scheduler = BackgroundScheduler(timezone=timezone.utc)
 
@@ -159,11 +162,25 @@ def run_live_trading_job():
 def order_flow_sync_job():
     """
     【新增】订单流自动同步任务
+    使用 scheduler.py 顶部定义的 AUTO_AREAS 进行控制
     """
     db = SessionLocal()
     try:
         manager = OrderFlowManager(db)
-        manager.sync_all()
+        
+        # 遍历配置的区域
+        for area in AUTO_AREAS:
+            try:
+                # 1. 历史归档 (T+1) - 补充修正历史数据
+                # 即使频繁调用，Manager 内部也会检查时间戳，不会重复请求
+                manager.sync_history_backfill(area)
+                
+                # 2. 实时流 (T+0) - 追赶最新订单
+                manager.sync_realtime(area)
+                
+            except Exception as inner_e:
+                logger.error(f"[{area}] Sync Failed: {inner_e}")
+                
     except Exception as e:
         logger.error(f"Order Flow Sync Job Error: {e}")
     finally:
@@ -199,25 +216,25 @@ def start_scheduler():
 
         scheduler.add_job(
             order_flow_sync_job,
-            trigger=IntervalTrigger(hours=1, timezone=timezone.utc),
-            id="startup_order_flow_sync", # ID 必须和上面的不一样
-            name="Startup Order Flow Sync",
+            trigger=IntervalTrigger(minutes=5, timezone=timezone.utc),
+            id="auto_order_flow_sync", # ID 必须和上面的不一样
+            name="Order Flow Sync (Realtime)",
             replace_existing=True,
             misfire_grace_time=3600,
             max_instances=1,
-            next_run_time=now
+            next_run_time=now + timedelta(minutes=1)
         )
 
-        scheduler.add_job(
-            run_live_trading_job, 
-            trigger=IntervalTrigger(minutes=5, timezone=timezone.utc), 
-            id="live_trading_job",
-            name="Live Trading Heartbeat",
-            replace_existing=True,
-            max_instances=1, # 强制单实例
-            misfire_grace_time=300,
-            next_run_time=now
-        )
+        # scheduler.add_job(
+        #     run_live_trading_job, 
+        #     trigger=IntervalTrigger(minutes=5, timezone=timezone.utc), 
+        #     id="live_trading_job",
+        #     name="Live Trading Heartbeat",
+        #     replace_existing=True,
+        #     max_instances=1, # 强制单实例
+        #     misfire_grace_time=300,
+        #     next_run_time=now
+        # )
 
         # 启动调度器
         scheduler.start()

@@ -24,7 +24,7 @@
           <el-button link type="primary" size="small" @click="refreshAll" icon="Refresh">刷新状态</el-button>
         </div>
         
-        <el-table :data="systemStatus" style="width: 100%" size="small" border stripe>
+        <el-table :data="systemStatus.trades" style="width: 100%" size="small" border stripe>
           <el-table-column prop="area" label="区域" width="80" align="center" sortable />
           <el-table-column prop="status" label="运行状态" width="120" align="center">
             <template #default="scope">
@@ -37,6 +37,41 @@
           <el-table-column prop="last_fetched_time" label="已归档至 (安全线)" width="180">
             <template #default="scope">
               <span style="font-family: monospace;">{{ formatDate(scope.row.last_fetched_time) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="updated_at" label="最后心跳时间" width="180">
+            <template #default="scope">
+              <span>{{ formatDate(scope.row.updated_at) }}</span>
+              <el-tag v-if="isOutdated(scope.row.updated_at)" type="danger" size="small" style="margin-left:5px">延迟</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="last_error" label="错误日志">
+            <template #default="scope">
+              <span v-if="scope.row.last_error" class="error-text">
+                {{ scope.row.last_error }}
+              </span>
+              <span v-else style="color: #c0c4cc;">-</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-table :data="systemStatus.orders" style="width: 100%" size="small" border stripe>
+          <el-table-column prop="area" label="区域" width="80" align="center" sortable />
+          <el-table-column prop="status" label="运行状态" width="120" align="center">
+            <template #default="scope">
+              <el-tag v-if="scope.row.status === 'ok'" type="success" effect="dark">正常</el-tag>
+              <el-tag v-else-if="scope.row.status === 'running'" type="primary" effect="dark">同步中...</el-tag>
+              <el-tag v-else-if="scope.row.status === 'warning'" type="warning" effect="dark">部分异常</el-tag>
+              <el-tag v-else type="danger" effect="dark">错误中断</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="last_realtime_time" label="🚀 实时进度 (Realtime)" width="180">
+            <template #default="scope">
+              <span style="font-family: monospace;">{{ formatDate(scope.row.last_realtime_time) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="last_archived_time" label="📚 归档进度 (Archived)" width="180">
+            <template #default="scope">
+              <span style="font-family: monospace;">{{ formatDate(scope.row.last_archived_time) }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="updated_at" label="最后心跳时间" width="180">
@@ -175,7 +210,10 @@ const logTerminal = ref(null);
 const calendarDate = ref(new Date());
 const currentViewArea = ref('SE3'); // ⭐ 新增：当前查看的区域
 const availableData = ref({}); 
-const systemStatus = ref([]);  
+const systemStatus = ref({
+  trades: [],
+  orders: []
+});  
 const dialogVisible = ref(false);
 const isFetching = ref(false);
 

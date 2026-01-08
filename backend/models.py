@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Boolean, Index, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Boolean, Index, UniqueConstraint, BigInteger
 from .database import Base
 from datetime import datetime
 
@@ -108,55 +108,59 @@ class BacktestRecord(Base):
 
 class OrderFlowTick(Base):
     """
-    【订单流逐笔数据】
-    记录每一次挂单、撤单、成交的微观事件。
-    数据来源：Nord Pool Orders API (Intraday orders / revisions)
+    【核心表】订单流全量记录表
+    存储 Nord Pool 返回的每一个 Revision 中的 Order 详情。
+    无论是 Snapshot 里的订单，还是 Delta 里的变更，都作为一行记录存储。
     """
     __tablename__ = "order_flow_ticks"
 
-    tick_id = Column(String, primary_key=True, index=True) # UUID
+    # --- 基础索引信息 ---
+    # 建议使用纳秒级时间戳或自增 ID 作为主键，防止高频交易主键冲突
+    id = Column(Integer, primary_key=True, autoincrement=True) 
+    
     contract_id = Column(String, index=True, nullable=False)
-    contract_name = Column(String, nullable=True)
-    delivery_start = Column(DateTime, nullable=True)
-    delivery_end = Column(DateTime, nullable=True)
-    delivery_area = Column(String, nullable=True, index=True)
+    delivery_area = Column(String, index=True, nullable=False)
     
-    # 事件发生时间 (UpdatedTime from API)
+    # --- 核心时间戳 ---
+    # UpdatedTime: 事件发生的时间（API 中的 updatedTime），用于回放
     timestamp = Column(DateTime, index=True, nullable=False)
+    # PriorityTime: 撮合优先级时间（非常重要！决定谁先成交）
+    priority_time = Column(DateTime, nullable=True)
     
-    # 价格与量
+    # --- 订单详情 ---
+    order_id = Column(String, index=True, nullable=False)
+    # Revision Number: 订单的版本号，用于判断消息顺序
+    revision_number = Column(Integer, nullable=False)
+    
     price = Column(Float)
-    volume = Column(Float)
-    remaining_volume = Column(Float)
+    volume = Column(Float) # 当前剩余量
     
-    # 订单方向: 'BUY' (买单), 'SELL' (卖单)
-    side = Column(String)
+    # --- 状态标识 ---
+    side = Column(String)   # 'Buy' / 'Sell'
+    state = Column(String)  # 'Active', 'Inactive', 'Hibernated'
+    action = Column(String) # 'UserAdded', 'UserModified', 'FullExecution'...
     
-    # 事件类型 (映射 API 的 action 字段)
-    # 枚举: 'TRADE' (成交), 'NEW' (挂单), 'CANCEL' (撤单/删除), 'UPDATE' (修改)
-    # 对应 API Action: 
-    #   TRADE  <- PartialExecution, FullExecution
-    #   NEW    <- UserAdded
-    #   CANCEL <- UserDeleted, SystemDeleted
-    #   UPDATE <- UserModified, SystemModified
-    type = Column(String, index=True)
+    # --- 关键重构字段 ---
+    # is_snapshot: 标记这条记录是否来自一次全量快照 (isSnapshot=True)
+    is_snapshot = Column(Boolean, default=False, index=True)
     
-    # 原始动作 (保留 API 原文字段，方便 debug)
-    raw_action = Column(String)
-    
-    # 主动方 (Aggressor Side) - 仅对 TRADE 类型有效
-    # 'BUY': 主动买入吃单, 'SELL': 主动卖出砸盘, 'NONE': 无法判断
-    # 需要在 Fetcher 逻辑中通过对比 OrderBook 推算得出
-    aggressor_side = Column(String, nullable=True)
-    
-    # 关联信息
-    order_id = Column(String, index=True)
-    revision_number = Column(Integer)
+    # deleted: 标记订单是否被删除 (API 显式返回 deleted: true 或 implicit 逻辑)
+    is_deleted = Column(Boolean, default=False)
 
-    # 建立联合索引以加速按时间回放
+    # --- 辅助字段 ---
+    # 用于记录这笔数据是来自实时流(Stream)还是历史归档(Archive)
+    source_type = Column(String, default="Stream") 
+    created_at = Column(DateTime)
+
+    # --- 联合索引与约束 ---
     __table_args__ = (
-        Index('idx_orderflow_main', 'delivery_area', 'contract_id', 'timestamp'),
-        UniqueConstraint('contract_id', 'delivery_area', 'revision_number', 'order_id', 'raw_action', name='uq_tick_business_key'),
+        # 核心查询索引：根据合约和时间快速拉取数据流
+        Index('idx_orderflow_replay', 'contract_id', 'timestamp', 'revision_number'),
+        
+        # 业务唯一约束：防止重复消费
+        # 注意：同一个订单在同一个 revision 可能出现多次吗？通常不会。
+        # 加上 is_snapshot 维度，防止 snapshot 和 delta 冲突（虽然逻辑上它们是不同的事件）
+        UniqueConstraint('contract_id', 'order_id', 'revision_number', 'action', name='uq_tick_entry'),
     )
 
 class OrderBookSnapshot(Base):

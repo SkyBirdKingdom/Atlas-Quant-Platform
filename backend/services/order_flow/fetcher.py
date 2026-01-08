@@ -2,7 +2,7 @@
 import requests
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, Iterator
+from typing import Dict, Iterator
 from ...core.config import settings
 
 logger = logging.getLogger("OrderFlowFetcher")

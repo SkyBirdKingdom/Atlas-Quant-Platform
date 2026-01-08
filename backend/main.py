@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware # 引入 CORS
 import uuid
 from contextlib import asynccontextmanager
 from . import scheduler
-from .models import FetchState
+from .models import FetchState, OrderFlowSyncState
 from sqlalchemy import text
 import pandas as pd
 from .core.logger import setup_logging
@@ -544,8 +544,20 @@ def get_task_status(task_id: str):
 
 @app.get("/api/system/status")
 def check_system_status(db: Session = Depends(get_db)):
-    states = db.query(FetchState).all()
-    return states
+    """
+    获取系统数据同步状态
+    返回结构: { "trades": [...], "orders": [...] }
+    """
+    # 1. 获取成交数据状态 (原有)
+    trade_states = db.query(FetchState).all()
+    
+    # 2. 获取订单流数据状态 (新增)
+    order_states = db.query(OrderFlowSyncState).all()
+    
+    return {
+        "trades": trade_states,
+        "orders": order_states
+    }
 
 
 @app.post("/api/admin/generate-kline")
