@@ -10,3 +10,4 @@ tenacity
 pandas_ta
 pydantic-settings
 scipy
+pyarrow

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from .database import get_db, Base, engine
 from .services import fetcher, analyzer, stats, backtest, market_data, kline_generator, feature_engine, optimizer # 导入刚才写的服务
 from .services import live_trader
+from .services.forensic import MarketForensics
 from fastapi.middleware.cors import CORSMiddleware # 引入 CORS
 import uuid
 from contextlib import asynccontextmanager
@@ -83,9 +84,52 @@ class OptimizeRequest(BaseModel):
     rules: Dict[str, List[Dict]] # 基础策略逻辑
     param_grid: Dict[str, List[float]] # {"rsi_buy": [20, 25, 30], "rsi_sell": [70, 80]}
 
+class ForensicRequest(BaseModel):
+    area: str = "SE3"
+    start_date: str         # "2025-01-01 14:00:00"
+    end_date: str           # "2025-01-01 15:00:00"
+    threshold: float = 0.05 # 5% 波动才算异常
+    contract_id: str = None # 【新增】可选，指定合约ID
+
 task_status = {}
 backtest_tasks = {}
 optimization_tasks = {}
+
+@app.post("/api/forensic/detect")
+def detect_manipulation(req: ForensicRequest, db: Session = Depends(get_db)):
+    """
+    市场微观取证分析接口
+    """
+    forensics = MarketForensics(db)
+    
+    # 1. 扫描异常 (如果传了 contract_id，就只扫描该合约)
+    anomalies = forensics.detect_price_anomalies(
+        req.area, req.start_date, req.end_date, 
+        req.threshold, 
+        req.contract_id # 传入合约ID
+    )
+    
+    if not anomalies:
+        msg = "该时段未发现显著异常"
+        if req.contract_id:
+            msg = f"合约 {req.contract_id} 在该时段内波动未超过 {req.threshold*100}%"
+        return {"status": "success", "msg": msg, "data": []}
+    
+    # 2. 对扫描出的异常段（可能是同一个合约的多个5分钟段）进行微观分析
+    detailed_reports = []
+    # 如果是指定合约，我们分析所有检测到的异常段；否则限制前3名
+    limit = 10 if req.contract_id else 3
+    
+    for anomaly in anomalies[:limit]:
+        report = forensics.analyze_microstructure(
+            anomaly['contract_id'],
+            anomaly['start_time'],
+            anomaly['end_time']
+        )
+        anomaly['microstructure_analysis'] = report
+        detailed_reports.append(anomaly)
+        
+    return {"status": "success", "data": detailed_reports}
 
 @app.post("/api/simulation/legacy-run")
 def run_legacy_simulation(

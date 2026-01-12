@@ -176,7 +176,7 @@ def order_flow_sync_job():
                 manager.sync_history_backfill(area)
                 
                 # 2. 实时流 (T+0) - 追赶最新订单
-                manager.sync_realtime(area)
+                # manager.sync_realtime(area)
                 
             except Exception as inner_e:
                 logger.error(f"[{area}] Sync Failed: {inner_e}")
@@ -222,7 +222,7 @@ def start_scheduler():
             replace_existing=True,
             misfire_grace_time=3600,
             max_instances=1,
-            next_run_time=now + timedelta(minutes=1)
+            next_run_time=now
         )
 
         # scheduler.add_job(
