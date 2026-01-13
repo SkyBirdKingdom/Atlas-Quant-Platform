@@ -8,6 +8,7 @@ from .fetcher import OrderFlowFetcher
 from .processor import OrderFlowProcessor
 from .storage import OrderFlowService
 from ...database import SessionLocal
+import gc
 
 logger = logging.getLogger("OrderFlowManager")
 
@@ -73,6 +74,9 @@ class OrderFlowManager:
             book_data = self.fetcher.fetch_historical_revisions(area, cid, date_str)
             
             ticks = self.processor.process_historical_revisions_response(book_data)
+
+            del book_data
+            book_data = None
             
             if ticks:
                 # 3. 存储 (冷热分离)
@@ -85,13 +89,18 @@ class OrderFlowManager:
             
             # 4. 【关键】标记该合约已完成
             thread_storage.mark_contract_archived(cid)
-            return True, len(ticks)
+            count = len(ticks) if ticks else 0
+            return True, count
 
         except Exception as e:
             logger.error(f"合约 {cid} 处理失败: {e}")
             return False, 0
         finally:
             thread_db.close()
+            del ticks
+            del thread_storage
+            del thread_db
+            gc.collect()
     
     def sync_history_backfill(self, area: str):
         """
@@ -242,6 +251,8 @@ class OrderFlowManager:
                 if ticks:
                     self.storage.save_ticks(ticks)
                     count += len(ticks)
+                del ticks
+                gc.collect()
             
             # 5. 更新断点 (只有成功才更新)
             self._update_checkpoint(area, fetch_end)

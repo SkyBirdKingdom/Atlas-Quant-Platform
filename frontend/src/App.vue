@@ -120,7 +120,7 @@ import FastSimulation from './components/FastSimulation.vue';
 import VolumeAnalysis from './components/VolumeAnalysis.vue';
 
 // 默认显示第一个 Tab
-const activeTab = ref('backtest');
+const activeTab = ref('volume');
 </script>
 
 <style>

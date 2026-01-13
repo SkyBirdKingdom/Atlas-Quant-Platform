@@ -7,6 +7,7 @@ from ...models import OrderFlowTick, OrderBookSnapshot, OrderContract
 from datetime import datetime, timezone
 import os
 import pandas as pd
+import gc
 
 logger = logging.getLogger("OrderFlowStorage")
 
@@ -33,29 +34,28 @@ class OrderFlowService:
 
             # 2. 转换为 DataFrame
             # 直接提取对象属性，比 __dict__ 更干净
-            data = []
-            for t in ticks:
-                data.append({
-                    "tick_id": t.tick_id,
-                    "revision_number": t.revision_number,
-                    "is_snapshot": t.is_snapshot,
-                    "order_id": t.order_id,
-                    "side": t.side,
-                    "price": t.price,
-                    "volume": t.volume,
-                    "updated_time": t.updated_time,
-                    "priority_time": t.priority_time,
-                    "is_deleted": t.is_deleted,
-                    # 冗余字段可根据需要决定是否存储，Parquet 压缩率很高，建议保留
-                    "contract_id": t.contract_id,
-                    "delivery_area": t.delivery_area
-                })
-            
-            df = pd.DataFrame(data)
+            columns = [
+                "tick_id", "revision_number", "is_snapshot", "order_id", 
+                "side", "price", "volume", "updated_time", "priority_time", 
+                "is_deleted", "contract_id", "delivery_area"
+            ]
+            data = [
+                (
+                    t.tick_id, t.revision_number, t.is_snapshot, t.order_id,
+                    t.side, t.price, t.volume, t.updated_time, t.priority_time,
+                    t.is_deleted, t.contract_id, t.delivery_area
+                )
+                for t in ticks
+            ]
+            df = pd.DataFrame(data, columns=columns)
+            del data
 
             # 3. 写入 Parquet (使用 snappy 压缩，速度快且体积小)
             df.to_parquet(file_path, index=False, compression='snappy')
             logger.info(f"已归档文件: {file_path}")
+
+            del df
+            gc.collect()
 
         except Exception as e:
             logger.error(f"Parquet 文件写入失败 {contract_id}: {e}")
@@ -157,6 +157,8 @@ class OrderFlowService:
             
             self.db.execute(stmt)
             self.db.commit()
+
+            del data_list
             
         except Exception as e:
             logger.error(f"Tick 数据写入失败: {e}")

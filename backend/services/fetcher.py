@@ -9,6 +9,9 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 from ..models import Trade, FetchState
 from ..core.config import settings
+import gc
+from dateutil import parser as date_parser
+
 
 logger = logging.getLogger("NordPoolFetcher")
 
@@ -125,84 +128,98 @@ def flatten_and_parse(raw_data, area):
 def save_chunk_to_db(db: Session, data_list: list):
     if not data_list: return
     
-    df = pd.DataFrame(data_list)
-    
-    # 1. 时间格式转换
-    time_cols = ['deliveryStart', 'deliveryEnd', 'tradeTime', 'tradeUpdatedAt']
-    for col in time_cols:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], format='mixed', errors='coerce')
-
-    # 2. 计算 duration 和 contract_type
-    if 'deliveryStart' in df.columns and 'deliveryEnd' in df.columns:
-        df['duration_minutes'] = (df['deliveryEnd'] - df['deliveryStart']).dt.total_seconds() / 60
-        conditions = [
-            (abs(df['duration_minutes'] - 60) < 1), 
-            (abs(df['duration_minutes'] - 15) < 1)
-        ]
-        df['contract_type'] = np.select(conditions, ['PH', 'QH'], default='Other')
-    else:
-        df['duration_minutes'] = 0
-        df['contract_type'] = 'Unknown'
-
-    records = df.to_dict(orient='records')
-    
+    # df = pd.DataFrame(data_list)
     db_records = []
-    for r in records:
-        # 构建符合新模型的字典
+
+    for r in data_list:
+        # 1. 纯 Python 解析时间 (比 Pandas 快且不占内存)
+        # 假设 API 返回的是 ISO 格式字符串
+        d_start = r.get('deliveryStart')
+        d_end = r.get('deliveryEnd')
+        
+        # 简单的 ISO 解析辅助函数 (兼容性处理)
+        def parse_ts(ts_str):
+            if not ts_str: return None
+            try:
+                # 尝试用最高效的方式解析，如果是 Python 3.11+ 可以直接 fromisoformat
+                return datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+            except:
+                # 兜底方案
+                try:
+                    return date_parser.parse(ts_str)
+                except:
+                    return None
+
+        dt_start = parse_ts(d_start)
+        dt_end = parse_ts(d_end)
+        
+        # 2. 计算 duration 和 contract_type
+        duration = 0.0
+        c_type = 'Unknown'
+        
+        if dt_start and dt_end:
+            # total_seconds() / 60
+            duration = (dt_end - dt_start).total_seconds() / 60.0
+            
+            # 逻辑同原 Pandas np.select
+            if abs(duration - 60) < 1:
+                c_type = 'PH'
+            elif abs(duration - 15) < 1:
+                c_type = 'QH'
+            else:
+                c_type = 'Other'
+
+        # 3. 构建 DB 记录
         db_record = {
-            # 复合主键字段
             "trade_id": r.get('tradeId'),
             "delivery_area": r.get('deliveryArea'),
             "trade_side": r.get('tradeSide'),
             
-            # 合约信息
             "contract_id": r.get('contractId'),
             "contract_name": r.get('contractName'),
-            "delivery_start": r.get('deliveryStart'),
-            "delivery_end": r.get('deliveryEnd'),
-            "duration_minutes": r.get('duration_minutes'),
-            "contract_type": r.get('contract_type'),
+            "delivery_start": dt_start, # 直接使用 datetime 对象
+            "delivery_end": dt_end,
+            "duration_minutes": duration,
+            "contract_type": c_type,
             
-            # 交易信息
             "price": r.get('price'),
             "volume": r.get('volume'),
-            "trade_time": r.get('tradeTime'),
-            "trade_updated_at": r.get('tradeUpdatedAt'),
+            "trade_time": parse_ts(r.get('tradeTime')),
+            "trade_updated_at": parse_ts(r.get('tradeUpdatedAt')),
             
-            # 状态扩展字段
             "trade_state": r.get('tradeState'),
             "revision_number": r.get('revisionNumber'),
             "trade_phase": r.get('tradePhase'),
             "cross_px": r.get('crossPx'),
-            
-            # 订单腿信息
             "reference_order_id": r.get('referenceOrderId'),
-            
-            # 入库时间
             "created_at": datetime.utcnow()
         }
         db_records.append(db_record)
 
-    # 3. 执行 Upsert (Insert or Ignore/Update)
+    # 3. 执行 Upsert
     if not db_records: return
 
-    stmt = insert(Trade).values(db_records)
+    try:
+        stmt = insert(Trade).values(db_records)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=['trade_id', 'delivery_area', 'trade_side'],
+            set_={
+                "trade_updated_at": stmt.excluded.trade_updated_at,
+                "trade_state": stmt.excluded.trade_state,
+                "revision_number": stmt.excluded.revision_number,
+                "price": stmt.excluded.price,
+                "volume": stmt.excluded.volume
+            }
+        )
+        db.execute(stmt)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Save DB Error: {e}")
+        db.rollback()
+    finally:
+        del db_records
+        del data_list
     
-    # 这里的冲突检测必须包含所有的主键字段
-    stmt = stmt.on_conflict_do_update(
-        index_elements=['trade_id', 'delivery_area', 'trade_side'], # 复合主键冲突检测
-        set_={
-            "trade_updated_at": stmt.excluded.trade_updated_at,
-            "trade_state": stmt.excluded.trade_state,
-            "revision_number": stmt.excluded.revision_number,
-            "price": stmt.excluded.price,
-            "volume": stmt.excluded.volume
-        }
-    )
-    db.execute(stmt)
-    db.commit()
-
 # --- 3. 状态管理 ---
 
 def update_fetch_state(db: Session, area: str, last_time=None, status="running", error=None):
@@ -280,10 +297,12 @@ def sync_area_logic(db: Session, area: str):
             data = flatten_and_parse(raw, area)
             if data:
                 save_chunk_to_db(db, data)
+                del data # 释放内存
             
             # 关键：历史数据抓完一段，更新一次数据库 Checkpoint
             update_fetch_state(db, area, last_time=chunk_end, status="running")
             curr = chunk_end
+            gc.collect()
             
         except Exception as e:
             logger.error(f"[{area}] 历史补录失败: {e}")
@@ -318,9 +337,11 @@ def sync_area_logic(db: Session, area: str):
             if data:
                 save_chunk_to_db(db, data)
                 logger.info(f"[{area}] 活跃窗口更新: 抓取 {len(data)} 条")
+                del data
             
             # 注意：这里【不调用】update_fetch_state 来更新 last_time
             active_start = chunk_end
+            gc.collect()
             
         except Exception as e:
             logger.error(f"[{area}] 活跃窗口刷新失败: {e}")

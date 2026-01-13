@@ -162,16 +162,20 @@ def get_contract_volume_trend(
         
         for date, group in grouped:
             # 1. 确定收盘锚点 (以交割开始时间作为收盘基准)
-            # group.iloc[0]['delivery_start'] 是该合约的交割时间
+            # Nord Pool 规则：收盘时间通常是交割开始前 1 小时
             close_time = group.iloc[0]['delivery_start'] - timedelta(hours=1)
             
-            # 2. 应用时间过滤 (收盘前 N 小时)
+            # 2. 严格的时间过滤
+            # 必须同时限制 Start 和 End，防止包含交割后的调整数据
             if hours_before_close:
                 start_window = close_time - timedelta(hours=hours_before_close)
-                # 筛选出窗口内的交易
-                valid_trades = group[group['trade_time'] >= start_window].copy()
+                valid_trades = group[
+                    (group['trade_time'] >= start_window) & 
+                    (group['trade_time'] <= close_time)
+                ].copy()
             else:
-                valid_trades = group.copy()
+                # 如果没传 N，默认也只统计到 close_time 为止
+                valid_trades = group[group['trade_time'] <= close_time].copy()
             
             if valid_trades.empty:
                 results.append({"time": str(date), "value": 0})
@@ -179,26 +183,47 @@ def get_contract_volume_trend(
 
             # 3. 应用聚合点逻辑 (M 个分钟有交易)
             if min_points > 0:
-                # 将交易按分钟聚合，计算每一分钟是否有交易
-                # set_index -> resample('1T') -> count
-                valid_trades = valid_trades.sort_values('trade_time')
-                valid_trades['minute_bucket'] = valid_trades['trade_time'].dt.floor('T') # 截断到分钟
+                # 【核心修复】
+                # 为了正确计算“第 M 个点”，必须基于连续的时间轴，而不是稀疏的交易记录
                 
-                # 统计每分钟的交易次数 (其实只要 > 0 就算一个点)
-                minute_counts = valid_trades.groupby('minute_bucket').size()
+                # 确定时间轴起点
+                if hours_before_close:
+                    axis_start = start_window
+                else:
+                    # 如果没指定 N，就从当天第一笔交易开始算
+                    axis_start = valid_trades['trade_time'].min().floor('min')
+
+                # A. 构造连续时间轴 (1分钟级)
+                full_idx = pd.date_range(start=axis_start, end=close_time, freq='1min')
                 
-                # 如果总活跃分钟数 < M，则该日不满足条件，交易量为 0
-                if len(minute_counts) < min_points:
-                    results.append({"time": str(date), "value": 0})
+                # B. 重采样并填充 0
+                # 这样即使某分钟没交易，也会有一行 volume=0
+                df_resampled = (
+                    valid_trades.set_index('trade_time')
+                    .resample('1min')
+                    .agg({'volume': 'sum'})
+                    .reindex(full_idx, fill_value=0)
+                )
+                
+                # C. 寻找触发点 (Activation Time)
+                # 只有 volume > 0 的分钟才算聚合点
+                df_resampled['is_active'] = (df_resampled['volume'] > 0).astype(int)
+                df_resampled['active_cumsum'] = df_resampled['is_active'].cumsum()
+                
+                # 筛选出累计活跃数达到 M 的所有时刻
+                qualified_moments = df_resampled[df_resampled['active_cumsum'] >= min_points]
+                
+                # 如果整个窗口内活跃分钟数不足 M，则该日有效交易量为 0
+                if qualified_moments.empty:
+                    # results.append({"time": str(date), "value": 0})
                     continue
                 
-                # 找到第 M 个聚合点的时间
-                trigger_time = minute_counts.index[min_points - 1]
+                # 第 M 个聚合点的时间
+                activation_time = qualified_moments.index[0]
                 
-                # 4. 计算累积交易量 (从第 M 个点之后开始累计)
-                # 注意：策略通常是“第M个点确认后入场”，所以统计 trigger_time 之后的量
-                # 或者包含 trigger_time？这里假设包含 trigger_time 当分钟及以后
-                final_volume = valid_trades[valid_trades['minute_bucket'] >= trigger_time]['volume'].sum()
+                # D. 统计有效容量
+                # 从激活时间(含)开始，一直到收盘
+                final_volume = df_resampled.loc[activation_time:]['volume'].sum()
                 
                 results.append({"time": str(date), "value": round(final_volume, 2)})
             

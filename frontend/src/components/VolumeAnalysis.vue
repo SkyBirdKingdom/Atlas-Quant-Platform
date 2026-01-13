@@ -68,7 +68,7 @@
 
     <div class="chart-wrapper">
       <div class="chart-header">
-        <div class="chart-title" v-if="chartData.length > 0">
+        <div class="chart-title">
           <h2>
             {{ shortName }}
             <span v-if="analysisType==='trend'">策略交易量趋势 (N={{hoursBeforeClose}}, M={{minPoints}})</span>
@@ -77,11 +77,12 @@
           </h2>
           <span class="sub-title">{{ area }} | {{ dateRange[0] }} ~ {{ dateRange[1] }}</span>
         </div>
-        <div class="empty-placeholder" v-else>
-          <el-empty description="输入参数并点击分析，探索量化规律" />
-        </div>
       </div>
-      <div ref="chartContainer" class="chart-container"></div>
+      <div class="chat-container" v-if="chartData.length === 0 && !loading">
+        <el-empty class="empty-placeholder" description="暂无数据， 请填写查询参数并执行分析。">
+        </el-empty>
+      </div>
+      <div ref="chartContainer" class="chart-container" v-else></div>
     </div>
   </div>
 </template>
@@ -99,8 +100,8 @@ const dateRange = ref(['2025-10-01', '2025-10-31']);
 const analysisType = ref('trend');
 
 // 新增策略参数
-const hoursBeforeClose = ref(2.0); // 默认收盘前2小时
-const minPoints = ref(5);          // 默认需要5个活跃分钟
+const hoursBeforeClose = ref(4.0); // 默认收盘前4小时
+const minPoints = ref(10);          // 默认需要10个活跃分钟
 
 const loading = ref(false);
 const chartData = ref([]);

@@ -2,7 +2,7 @@ import axios from 'axios';
 
 // 创建 axios 实例，指向你的 FastAPI 地址
 const api = axios.create({
-  baseURL: 'http://127.0.0.1:8000/api', // 你的后端地址
+  baseURL: 'http://192.168.0.144:8000/api', // 你的后端地址
   timeout: 300000 // 300秒超时，因为抓取数据可能很慢
 });
 
