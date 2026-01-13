@@ -29,6 +29,16 @@
         <MarketAnalysis />
       </el-tab-pane>
 
+      <el-tab-pane name="volume" label="📈 交易量趋势">
+        <template #label>
+          <span class="custom-tabs-label">
+            <el-icon><DataLine /></el-icon>
+            <span>交易量趋势</span>
+          </span>
+        </template>
+        <VolumeAnalysis />
+      </el-tab-pane>
+
       <el-tab-pane name="range" label="📅 区间热力全景">
         <template #label>
           <span class="custom-tabs-label">
@@ -96,7 +106,7 @@
 <script setup>
 import { ref } from 'vue';
 // 引入 Element Plus 的图标
-import { DataLine, Calendar, Setting, Histogram, TrendCharts } from '@element-plus/icons-vue';
+import { DataLine, Calendar, Setting, Histogram, TrendCharts, Compass } from '@element-plus/icons-vue';
 
 // 引入三个核心业务组件
 import RiskDashboard from './components/RiskDashboard.vue';
@@ -107,6 +117,7 @@ import MarketAnalysis from './components/MarketAnalysis.vue';
 import OptimizationLab from './components/OptimizationLab.vue';
 import LiveDashboard from './components/LiveDashboard.vue';
 import FastSimulation from './components/FastSimulation.vue';
+import VolumeAnalysis from './components/VolumeAnalysis.vue';
 
 // 默认显示第一个 Tab
 const activeTab = ref('backtest');

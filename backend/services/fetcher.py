@@ -13,7 +13,7 @@ from ..core.config import settings
 logger = logging.getLogger("NordPoolFetcher")
 
 # 配置
-AUTO_AREAS = ["SE3"]
+AUTO_AREAS = ["SE1", "SE2", "SE3", "SE4"]  # 自动同步的区域列表
 API_URL = "https://data-api.nordpoolgroup.com/api/v2/Intraday/Trades/ByDeliveryStart"
 
 # --- 1. 网络层：带自动重试的 API 请求 ---

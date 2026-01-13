@@ -1,6 +1,6 @@
 from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from .database import get_db, Base, engine
 from .services import fetcher, analyzer, stats, backtest, market_data, kline_generator, feature_engine, optimizer # 导入刚才写的服务
@@ -91,9 +91,57 @@ class ForensicRequest(BaseModel):
     threshold: float = 0.05 # 5% 波动才算异常
     contract_id: str = None # 【新增】可选，指定合约ID
 
+class VolumeTrendRequest(BaseModel):
+    area: str = "SE3"
+    short_name: str # "PH01"
+    start_date: str
+    end_date: str
+    # 新增可选参数
+    hours_before_close: Optional[float] = None
+    min_points: Optional[int] = 0
+
 task_status = {}
 backtest_tasks = {}
 optimization_tasks = {}
+
+@app.post("/api/stats/volume/trend")
+def analyze_volume_trend(req: VolumeTrendRequest, db: Session = Depends(get_db)):
+    """
+    获取指定合约类型的每日交易量趋势
+    """
+    try:
+        data = stats.get_contract_volume_trend(
+            db, 
+            req.area, 
+            req.short_name, 
+            req.start_date, 
+            req.end_date,
+            req.hours_before_close, # 传递新参数
+            req.min_points          # 传递新参数
+        )
+        return {"status": "success", "data": data}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/stats/volume/intraday")
+def analyze_intraday_pattern(req: VolumeTrendRequest, db: Session = Depends(get_db)):
+    """获取日内分钟级流动性分布"""
+    try:
+        data = stats.get_intraday_pattern(db, req.area, req.short_name, req.start_date, req.end_date)
+        return {"status": "success", "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/stats/volume/profile")
+def analyze_volume_profile(req: VolumeTrendRequest, db: Session = Depends(get_db)):
+    """获取价格成交分布"""
+    try:
+        data = stats.get_price_volume_profile(db, req.area, req.short_name, req.start_date, req.end_date)
+        return {"status": "success", "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/forensic/detect")
 def detect_manipulation(req: ForensicRequest, db: Session = Depends(get_db)):
@@ -649,12 +697,12 @@ def get_daily_contracts(date: str, area: str, db: Session = Depends(get_db)):
     
     # 修改 SQL：查出 delivery_end 以便计算时长
     query = text("""
-        SELECT DISTINCT contract_id, delivery_start, delivery_end, contract_type
+        SELECT DISTINCT contract_id, contract_name, delivery_start, delivery_end, contract_type
         FROM trades
         WHERE delivery_area = :area 
-          AND delivery_start >= :start 
-          AND delivery_start <= :end
-        ORDER BY delivery_start
+        AND delivery_start >= (CAST(:start AS TIMESTAMP) AT TIME ZONE 'Europe/Stockholm' AT TIME ZONE 'UTC')
+        AND delivery_start <= (CAST(:end   AS TIMESTAMP) AT TIME ZONE 'Europe/Stockholm' AT TIME ZONE 'UTC')
+        ORDER BY delivery_start ASC, contract_name ASC
     """)
     
     rows = db.execute(query, {"area": area, "start": start, "end": end}).fetchall()
@@ -681,7 +729,8 @@ def get_daily_contracts(date: str, area: str, db: Session = Depends(get_db)):
         delivery_str = r.delivery_start.strftime("%H:%M")
         res.append({
             "contract_id": r.contract_id,
-            "label": f"{delivery_str} ({real_type})",
+            "contract_name": r.contract_name,
+            "label": f"{delivery_str} (UTC Start)",
             "type": real_type,
             "delivery_time": r.delivery_start.strftime("%Y-%m-%d %H:%M"),
             "delivery_end": r.delivery_end.strftime("%Y-%m-%d %H:%M"),

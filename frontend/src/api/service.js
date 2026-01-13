@@ -59,4 +59,12 @@ export const getLiveStatus = () => api.get('/live/status')
 
 export const getLiveLogs = () => api.get('/live/logs')
 
+export const detectForensic = (data) => api.post('/forensic/detect', data);
+
+export const getVolumeTrend = (data) => api.post('/stats/volume/trend', data);
+
+export const getIntradayPattern = (data) => api.post('/stats/volume/intraday', data);
+
+export const getVolumeProfile = (data) => api.post('/stats/volume/profile', data);
+
 export default api;

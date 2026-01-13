@@ -1,28 +1,27 @@
-# backend/services/forensic.py
+import os
 import pandas as pd
 import numpy as np
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
-from ..models import Trade, OrderFlowTick
+from ..models import Trade, OrderFlowTick, OrderContract
 
 class MarketForensics:
     """
-    市场微观结构取证分析器
-    用于检测市场操纵、异常波动及主力行为
+    市场微观结构取证分析器 (混合存储版)
+    支持自动路由：热数据(DB) / 冷数据(Parquet)
     """
 
     def __init__(self, db: Session):
         self.db = db
+        self.base_data_dir = "data/order_flow" # 与 storage.py 保持一致
 
     def detect_price_anomalies(self, area: str, start_date: str, end_date: str, threshold_pct: float = 0.05, target_contract_id: Optional[str] = None):
         """
-        【第一步】宏观/定点扫描：寻找价格异常波动的时间窗口
-        :param threshold_pct: 价格突变阈值 (默认 0.05 即 5%)
-        :param target_contract_id: (可选) 如果指定，则只分析该合约
+        【第一步】宏观扫描：寻找价格异常波动的时间窗口
+        (逻辑保持不变，因为 Trade 数据通常全量在 DB 中，或者 Trade 数据量小一直存 DB)
         """
-        # 1. 构建查询条件
         query = self.db.query(Trade.trade_time, Trade.price, Trade.contract_id)\
             .filter(
                 Trade.delivery_area == area,
@@ -30,7 +29,6 @@ class MarketForensics:
                 Trade.trade_time <= end_date
             )
         
-        # 如果指定了合约，增加过滤条件
         if target_contract_id:
             query = query.filter(Trade.contract_id == target_contract_id)
             
@@ -50,29 +48,20 @@ class MarketForensics:
             
         df.set_index('time', inplace=True)
         
-        # 按合约和 5分钟 分组计算 OHLC
+        # 按 5分钟 分组
         ohlc = df.groupby([pd.Grouper(freq='5T'), 'contract'])['price'].agg(['first', 'max', 'min', 'last']).reset_index()
         
         anomalies = []
         for _, row in ohlc.iterrows():
             open_px = row['first']
-            high_px = row['max']
-            low_px = row['min']
-            
             if open_px <= 0: continue
             
-            # 计算最大振幅 (无论是向上拉升还是向下砸盘)
-            # 拉升幅度
-            pump_pct = (high_px - open_px) / open_px
-            # 砸盘幅度
-            dump_pct = (low_px - open_px) / open_px
+            pump_pct = (row['max'] - open_px) / open_px
+            dump_pct = (row['min'] - open_px) / open_px
             
-            # 判定类型
             anomaly_type = None
             change_pct = 0
             
-            # 如果指定了合约，我们对阈值放宽，记录所有波动；或者严格遵守阈值
-            # 这里逻辑：如果超过阈值，记录下来
             if pump_pct > threshold_pct:
                 anomaly_type = "Pump"
                 change_pct = pump_pct
@@ -80,45 +69,100 @@ class MarketForensics:
                 anomaly_type = "Dump"
                 change_pct = dump_pct
             
-            # 如果是定点分析 (有 target_contract_id)，即使没超过阈值，
-            # 只要有一定波动(比如1%)也可能想看，可以根据需求调整逻辑。
-            # 目前逻辑：必须超过 threshold_pct 才返回
             if anomaly_type:
                 anomalies.append({
                     "contract_id": row['contract'],
                     "start_time": row['time'],
                     "end_time": row['time'] + timedelta(minutes=5),
                     "open": open_px,
-                    "high": high_px if anomaly_type == "Pump" else low_px,
+                    "high": row['max'] if anomaly_type == "Pump" else row['min'],
                     "change_pct": round(change_pct * 100, 2),
                     "type": anomaly_type
                 })
                 
-        # 按波动幅度降序排列
         return sorted(anomalies, key=lambda x: abs(x['change_pct']), reverse=True)
+
+    def _load_ticks(self, contract_id: str, start_time: datetime, end_time: datetime) -> List[Dict]:
+        """
+        【核心逻辑】智能加载数据 (Parquet 优先 -> DB 兜底)
+        """
+        ticks_data = []
+        
+        # 1. 获取合约元数据以确定文件路径
+        contract = self.db.query(OrderContract).filter(OrderContract.contract_id == contract_id).first()
+        
+        if contract and contract.delivery_date_utc:
+            area = contract.delivery_area
+            date_str = contract.delivery_date_utc.strftime('%Y-%m-%d')
+            file_path = os.path.join(self.base_data_dir, area, date_str, f"{contract_id}.parquet")
+            
+            # --- 尝试加载冷数据 (Parquet) ---
+            if os.path.exists(file_path):
+                try:
+                    df = pd.read_parquet(file_path)
+                    
+                    # 确保时间列为 datetime 且带时区
+                    if 'updated_time' in df.columns:
+                        df['updated_time'] = pd.to_datetime(df['updated_time'])
+                        # 如果 parquet 里存的是 naive 时间，假定为 UTC
+                        if df['updated_time'].dt.tz is None:
+                            df['updated_time'] = df['updated_time'].dt.tz_localize('UTC')
+                        
+                        # 确保 start_time/end_time 带时区
+                        if start_time.tzinfo is None: start_time = start_time.replace(tzinfo=timezone.utc)
+                        if end_time.tzinfo is None: end_time = end_time.replace(tzinfo=timezone.utc)
+
+                        # 过滤时间段
+                        mask = (df['updated_time'] >= start_time) & (df['updated_time'] <= end_time)
+                        filtered_df = df[mask]
+                        
+                        # 转为字典列表
+                        ticks_data = filtered_df.to_dict('records')
+                        return ticks_data
+                        
+                except Exception as e:
+                    print(f"[Forensic] 读取 Parquet 失败，尝试查库: {e}")
+
+        # --- 降级加载热数据 (DB) ---
+        # 修正字段名 timestamp -> updated_time
+        db_ticks = self.db.query(OrderFlowTick).filter(
+            OrderFlowTick.contract_id == contract_id,
+            OrderFlowTick.updated_time >= start_time,
+            OrderFlowTick.updated_time <= end_time
+        ).order_by(OrderFlowTick.updated_time).all()
+        
+        # 将 ORM 对象转为字典，与 Parquet 格式统一
+        for t in db_ticks:
+            ticks_data.append({
+                "volume": t.volume,
+                "price": t.price,
+                "side": t.side,
+                "is_deleted": t.is_deleted,
+                "updated_time": t.updated_time,
+                "priority_time": t.priority_time
+            })
+            
+        return ticks_data
 
     def analyze_microstructure(self, contract_id: str, start_time: datetime, end_time: datetime):
         """
-        【第二步】微观分析：深入分析指定窗口内的订单流行为
-        :param contract_id: 目标合约
-        :param start_time: 窗口开始时间
-        :param end_time: 窗口结束时间
+        【第二步】微观分析
         """
-        # 拉取该时间段的所有 Tick (挂单、撤单、成交)
-        # 注意：这里需要 OrderFlowTick 表中有数据 (历史归档已完成)
-        ticks = self.db.query(OrderFlowTick).filter(
-            OrderFlowTick.contract_id == contract_id,
-            OrderFlowTick.timestamp >= start_time,
-            OrderFlowTick.timestamp <= end_time
-        ).order_by(OrderFlowTick.timestamp).all()
+        # 使用通用加载器获取数据
+        ticks = self._load_ticks(contract_id, start_time, end_time)
         
         if not ticks:
-            return {"status": "no_data", "msg": "该时段无订单流数据，请检查归档状态"}
+            return {
+                "total_volume": 0,
+                "aggressive_buy_ratio": 0,
+                "spoofing_ratio_buy": 0,
+                "spoofing_ratio_sell": 0,
+                "large_orders": [],
+                "conclusion": "该时段无订单流数据(DB/File均未找到)"
+            }
 
         metrics = {
             "total_volume": 0,
-            "buy_aggressor_vol": 0,    
-            "sell_aggressor_vol": 0,   
             "limit_buy_added": 0,      
             "limit_buy_canceled": 0,   
             "limit_sell_added": 0,
@@ -126,83 +170,68 @@ class MarketForensics:
             "large_orders": []         
         }
         
-        # 动态定义大单阈值 (简单起见，假设 > 20MW 算大单，实际应根据该合约平均单量计算)
         large_order_threshold = 20 
         
         for t in ticks:
-            vol = t.volume
-            # 1. 成交分析
-            if t.type == 'TRADE': # 或者 t.side 为空但有成交
-                # 有些历史数据可能没有标记 type='TRADE'，需结合 processor 逻辑
-                # 假设 processor 已经标记好了 type
-                metrics["total_volume"] += vol
-                # 历史归档数据可能没有 aggressor_side (Stream才有)，这里做个兼容
-                # 如果没有，只能看 side
-                side = t.side or 'UNKNOWN'
-                # 注意：Trade 的 Side 并不直接等于 Aggressor，需谨慎。
-                # 如果数据库没存 aggressor，只能略过此指标或近似估算
-                pass
-            
-            # 2. 挂单分析
-            elif t.type in ['NEW', 'UPDATE']:
-                if t.side == 'BUY':
-                    metrics["limit_buy_added"] += vol
-                else:
-                    metrics["limit_sell_added"] += vol
-                
-                # 记录大单挂入
-                if vol >= large_order_threshold:
-                    metrics["large_orders"].append({
-                        "time": t.timestamp.strftime('%H:%M:%S.%f'),
-                        "action": "PLACED",
-                        "side": t.side,
-                        "price": t.price,
-                        "volume": vol
-                    })
+            # 兼容处理：Parquet读出来是字典，DB读出来转成了字典
+            vol = t.get('volume', 0)
+            price = t.get('price', 0)
+            side = t.get('side', 'UNKNOWN')
+            is_deleted = t.get('is_deleted', False)
+            # 处理时间格式 (可能是 Timestamp 对象或 datetime)
+            ts = t.get('updated_time')
+            time_str = ts.strftime('%H:%M:%S.%f') if hasattr(ts, 'strftime') else str(ts)
 
             # 3. 撤单分析 (Deleted)
-            elif t.type == 'CANCEL' or t.is_deleted:
-                if t.side == 'BUY':
+            if is_deleted:
+                if side == 'BUY':
                     metrics["limit_buy_canceled"] += vol
                 else:
                     metrics["limit_sell_canceled"] += vol
                     
-                # 记录大单撤销 (这就是 Spoofing 的铁证)
                 if vol >= large_order_threshold:
                     metrics["large_orders"].append({
-                        "time": t.timestamp.strftime('%H:%M:%S.%f'),
+                        "time": time_str,
                         "action": "CANCELED",
-                        "side": t.side,
-                        "price": t.price,
+                        "side": side,
+                        "price": price,
+                        "volume": vol
+                    })
+            
+            # 2. 挂单/修改分析 (非删除)
+            else:
+                if side == 'BUY':
+                    metrics["limit_buy_added"] += vol
+                else:
+                    metrics["limit_sell_added"] += vol
+                
+                if vol >= large_order_threshold:
+                    metrics["large_orders"].append({
+                        "time": time_str,
+                        "action": "PLACED",
+                        "side": side,
+                        "price": price,
                         "volume": vol
                     })
 
-        # --- 计算衍生指标 ---
-        
-        # 虚假买盘比率 (Spoofing Ratio Buy) = 撤掉的买单 / 挂出的买单
+        # --- 计算指标 ---
         spoof_buy = (metrics["limit_buy_canceled"] / metrics["limit_buy_added"]) if metrics["limit_buy_added"] > 0 else 0
-        
-        # 虚假卖盘比率 (Spoofing Ratio Sell)
         spoof_sell = (metrics["limit_sell_canceled"] / metrics["limit_sell_added"]) if metrics["limit_sell_added"] > 0 else 0
         
         metrics["spoofing_ratio_buy"] = round(spoof_buy * 100, 2)
         metrics["spoofing_ratio_sell"] = round(spoof_sell * 100, 2)
+        metrics["aggressive_buy_ratio"] = 0 # 需结合 Trade 表计算，暂置 0
         
-        # 结论生成
+        # 结论
         conclusion = []
         if spoof_buy > 0.8 and metrics["limit_buy_added"] > 50:
-            conclusion.append("⚠️ 买方严重虚假挂单 (Spoofing Buy): 挂多撤多，意图诱多或托底。")
+            conclusion.append("⚠️ 买方严重诱多 (Spoofing Buy): 挂多撤多。")
         if spoof_sell > 0.8 and metrics["limit_sell_added"] > 50:
-            conclusion.append("⚠️ 卖方严重虚假挂单 (Spoofing Sell): 挂多撤多，意图打压价格。")
-        
-        # 检查是否有大单“秒撤” (Flash Cancel)
-        # 这里只是简单展示，实际可以比对大单挂入和撤销的时间差
+            conclusion.append("⚠️ 卖方严重诱空 (Spoofing Sell): 挂多撤多。")
         if any(o['action'] == 'CANCELED' for o in metrics['large_orders']):
-             conclusion.append("🚨 检测到大额订单撤单行为。")
-             
+             conclusion.append("🚨 检测到大额订单撤单。")
         if not conclusion:
-            conclusion.append("✅ 订单流行为相对平稳。")
+            conclusion.append("✅ 订单流相对平稳。")
 
         metrics["conclusion"] = " ".join(conclusion)
-        
         return metrics
