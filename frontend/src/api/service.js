@@ -69,4 +69,8 @@ export const getVolumeProfile = (data) => api.post('/stats/volume/profile', data
 
 export const analyzeVolumeProfile = (params) => api.post('/stats/volume/profile-analysis', params);
 
+export const getLiquidationAnalysis = (params) => api.post('/stats/liquidation-analysis', params);
+
+export const verifyTTLModel = (params) => api.post('/stats/ttl-verification', params);
+
 export default api;

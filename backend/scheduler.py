@@ -216,7 +216,7 @@ def start_scheduler():
 
         scheduler.add_job(
             order_flow_sync_job,
-            trigger=IntervalTrigger(minutes=5, timezone=timezone.utc),
+            trigger=IntervalTrigger(hours=6, timezone=timezone.utc),
             id="auto_order_flow_sync", # ID 必须和上面的不一样
             name="Order Flow Sync (Realtime)",
             replace_existing=True,

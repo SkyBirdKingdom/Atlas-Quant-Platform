@@ -49,6 +49,26 @@
         <VolumeProfileAnalysis />
       </el-tab-pane>
 
+      <el-tab-pane name="TTLAnalysis" label="TTLAnalysis">
+        <template #label>
+          <span class="custom-tabs-label">
+            <el-icon><DataLine /></el-icon>
+            <span>TTLAnalysis</span>
+          </span>
+        </template>
+        <TTLAnalysis />
+      </el-tab-pane>
+
+      <el-tab-pane name="liquidation" label="📈 清算时间模型">
+        <template #label>
+          <span class="custom-tabs-label">
+            <el-icon><DataLine /></el-icon>
+            <span>清算时间模型</span>
+          </span>
+        </template>
+        <LiquidationAnalysis />
+      </el-tab-pane>
+
       <el-tab-pane name="range" label="📅 区间热力全景">
         <template #label>
           <span class="custom-tabs-label">
@@ -129,6 +149,8 @@ import LiveDashboard from './components/LiveDashboard.vue';
 import FastSimulation from './components/FastSimulation.vue';
 import VolumeAnalysis from './components/VolumeAnalysis.vue';
 import VolumeProfileAnalysis from './components/VolumeProfileAnalysis.vue';
+import LiquidationAnalysis from './components/LiquidationAnalysis.vue';
+import TTLAnalysis from './components/TTLAnalysis.vue';
 
 // 默认显示第一个 Tab
 const activeTab = ref('volume');

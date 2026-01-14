@@ -106,9 +106,48 @@ class VolumeProfileRequest(BaseModel):
     start_date: str # "2025-01-01"
     end_date: str   # "2025-03-01"
 
+class LiquidationAnalysisRequest(BaseModel):
+    area: str = "SE3"
+    short_name: str
+    start_date: str
+    end_date: str
+
+class TTLVerificationRequest(BaseModel):
+    area: str = "SE3"
+    short_name: str
+    start_date: str
+    end_date: str
+    lookback_minutes: int = 15
+    horizon_cap: int = 60
+
 task_status = {}
 backtest_tasks = {}
 optimization_tasks = {}
+
+@app.post("/api/stats/ttl-verification")
+def verify_ttl(req: TTLVerificationRequest, db: Session = Depends(get_db)):
+    try:
+        data = stats.verify_ttl_model(
+            db, req.area, req.short_name, req.start_date, req.end_date,
+            req.lookback_minutes, req.horizon_cap
+        )
+        return {"status": "success", "data": data}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/stats/liquidation-analysis")
+def analyze_liquidation(req: LiquidationAnalysisRequest, db: Session = Depends(get_db)):
+    try:
+        data = stats.analyze_liquidation_model(
+            db, req.area, req.short_name, req.start_date, req.end_date
+        )
+        return {"status": "success", "data": data}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/stats/volume/profile-analysis")
 def analyze_volume_profile_distribution(req: VolumeProfileRequest, db: Session = Depends(get_db)):
