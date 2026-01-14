@@ -144,8 +144,8 @@ const refreshStatus = async () => {
     }
 
     // 2. 获取日志
-    const logRes = await getLiveLogs();
-    logs.value = logRes.data.logs || [];
+    // const logRes = await getLiveLogs();
+    // logs.value = logRes.data.logs || [];
     
   } catch (e) {
     console.error("Fetch status failed", e);
@@ -156,8 +156,8 @@ const refreshStatus = async () => {
 
 let timer = null;
 onMounted(() => {
-  refreshStatus();
-  timer = setInterval(refreshStatus, 5000); // 每5秒轮询一次
+  // refreshStatus();
+  // timer = setInterval(refreshStatus, 5000); // 每5秒轮询一次
 });
 
 onUnmounted(() => {

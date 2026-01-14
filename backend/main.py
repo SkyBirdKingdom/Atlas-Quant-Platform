@@ -100,9 +100,34 @@ class VolumeTrendRequest(BaseModel):
     hours_before_close: Optional[float] = None
     min_points: Optional[int] = 0
 
+class VolumeProfileRequest(BaseModel):
+    area: str = "SE3"
+    short_name: str # "PH01"
+    start_date: str # "2025-01-01"
+    end_date: str   # "2025-03-01"
+
 task_status = {}
 backtest_tasks = {}
 optimization_tasks = {}
+
+@app.post("/api/stats/volume/profile-analysis")
+def analyze_volume_profile_distribution(req: VolumeProfileRequest, db: Session = Depends(get_db)):
+    """
+    获取分钟级成交进度分布 (带分布数据)
+    """
+    try:
+        data = stats.get_intraday_volume_profile_analysis(
+            db, 
+            req.area, 
+            req.short_name, 
+            req.start_date, # 传入 start_date
+            req.end_date    # 传入 end_date
+        )
+        return {"status": "success", "data": data}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/stats/volume/trend")
 def analyze_volume_trend(req: VolumeTrendRequest, db: Session = Depends(get_db)):

@@ -67,4 +67,6 @@ export const getIntradayPattern = (data) => api.post('/stats/volume/intraday', d
 
 export const getVolumeProfile = (data) => api.post('/stats/volume/profile', data);
 
+export const analyzeVolumeProfile = (params) => api.post('/stats/volume/profile-analysis', params);
+
 export default api;

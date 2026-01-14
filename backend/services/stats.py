@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text, extract, cast, Date
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from ..models import Trade
 import pandas as pd
 import re
@@ -357,3 +357,150 @@ def get_price_volume_profile(db: Session, area: str, short_name: str, start_date
     except Exception as e:
         logger.error(f"Volume Profile Failed: {e}")
         raise e
+
+def get_intraday_volume_profile_analysis(
+    db: Session, 
+    area: str, 
+    short_name: str, 
+    start_date: str, 
+    end_date: str
+):
+    """
+    【高级分析】生成分钟级成交进度分布分析数据
+    统计范围：收盘前 4 小时 -> 收盘
+    改进点：
+    1. 支持自由日期范围 (start_date, end_date)
+    2. 基于 CET/CEST 本地时间过滤日期，解决 UTC 偏移问题
+    """
+    import re
+    import pandas as pd
+    from sqlalchemy import text
+    from datetime import timedelta
+    
+    # 1. 解析合约短名
+    match = re.match(r"^([A-Za-z]+)(\d+)$", short_name.strip())
+    if not match:
+        raise ValueError("合约格式错误，例: PH01, QH03")
+    
+    c_type = match.group(1).upper()
+    c_seq = int(match.group(2))
+    
+    # 计算目标本地时间的小时和分钟
+    if c_type == 'PH':
+        start_minute_of_day = (c_seq - 1) * 60
+    elif c_type == 'QH':
+        start_minute_of_day = (c_seq - 1) * 15
+    else:
+        raise ValueError("仅支持 PH 和 QH 合约分析")
+
+    target_hour = start_minute_of_day // 60
+    target_minute = start_minute_of_day % 60
+
+    # 2. 获取指定日期范围内的同类合约
+    # 【核心修正 SQL】
+    # 使用 ::date 将转换后的时间戳强转为日期，与传入的字符串进行比较
+    contracts_query = text("""
+        SELECT contract_id, delivery_start 
+        FROM trades 
+        WHERE delivery_area = :area 
+          AND contract_type = :ctype
+          -- 时区转换：UTC -> Stockholm -> 转日期 -> 比较
+          AND (delivery_start AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Stockholm')::date >= :start_date
+          AND (delivery_start AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Stockholm')::date <= :end_date
+          -- 同样，提取小时和分钟也要基于 Stockholm 时间
+          AND EXTRACT(HOUR FROM delivery_start AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Stockholm') = :target_hour
+          AND EXTRACT(MINUTE FROM delivery_start AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Stockholm') = :target_minute
+        GROUP BY contract_id, delivery_start
+        ORDER BY delivery_start
+    """)
+    
+    contracts = db.execute(contracts_query, {
+        "area": area, 
+        "ctype": c_type, 
+        "start_date": start_date, # "2025-06-01"
+        "end_date": end_date,     # "2025-08-01"
+        "target_hour": target_hour,
+        "target_minute": target_minute
+    }).fetchall()
+
+    if not contracts:
+        return {
+            "short_name": short_name,
+            "sample_days": 0,
+            "timeline": [],
+            "msg": "该时间段内无符合条件的合约"
+        }
+
+    # 3. 构建数据矩阵 (保持原有逻辑)
+    point_distributions = {} 
+    timeline_points = list(range(-240, 5, 5)) # -240 到 0
+    for t in timeline_points:
+        point_distributions[t] = []
+
+    for c in contracts:
+        cid = c.contract_id
+        d_start = c.delivery_start # 这里的 d_start 是 UTC datetime 对象
+        
+        # 收盘时间规则：交割开始前 1 小时
+        close_time = d_start - timedelta(hours=1)
+        
+        # 查该合约所有 Trades
+        trades_query = text("""
+            SELECT trade_time, volume 
+            FROM trades 
+            WHERE contract_id = :cid
+            ORDER BY trade_time ASC
+        """)
+        trades = db.execute(trades_query, {"cid": cid}).fetchall()
+        
+        if not trades: continue
+        
+        df = pd.DataFrame(trades, columns=['trade_time', 'volume'])
+        df['trade_time'] = pd.to_datetime(df['trade_time'])
+        
+        total_vol = df['volume'].sum()
+        if total_vol == 0: continue
+
+        # 预计算累积量
+        df = df.sort_values('trade_time')
+        df['cum_vol'] = df['volume'].cumsum()
+        
+        for point in timeline_points:
+            target_time = close_time + timedelta(minutes=point)
+            
+            # 找到 <= target_time 的最后一条成交记录
+            valid_rows = df[df['trade_time'] <= target_time]
+            
+            if valid_rows.empty:
+                current_cum = 0.0
+            else:
+                current_cum = valid_rows.iloc[-1]['cum_vol']
+            
+            pct = current_cum / total_vol
+            point_distributions[point].append(round(pct, 4))
+
+    # 4. 统计分析
+    median_curve = []
+    sorted_timeline = sorted(timeline_points)
+    
+    for t in sorted_timeline:
+        data_points = point_distributions[t]
+        if data_points:
+            data_points.sort()
+            median_val = data_points[len(data_points)//2]
+        else:
+            median_val = 0
+        
+        median_curve.append({
+            "time_offset": t, 
+            "label": f"{t}m", 
+            "value": median_val,
+            "raw_data": data_points 
+        })
+        
+    return {
+        "short_name": short_name,
+        "sample_days": len(contracts),
+        "timeline": median_curve,
+        "date_range": f"{start_date} ~ {end_date}"
+    }

@@ -39,6 +39,16 @@
         <VolumeAnalysis />
       </el-tab-pane>
 
+      <el-tab-pane name="percent" label="📈 交易量百分比">
+        <template #label>
+          <span class="custom-tabs-label">
+            <el-icon><DataLine /></el-icon>
+            <span>交易量百分比</span>
+          </span>
+        </template>
+        <VolumeProfileAnalysis />
+      </el-tab-pane>
+
       <el-tab-pane name="range" label="📅 区间热力全景">
         <template #label>
           <span class="custom-tabs-label">
@@ -118,6 +128,7 @@ import OptimizationLab from './components/OptimizationLab.vue';
 import LiveDashboard from './components/LiveDashboard.vue';
 import FastSimulation from './components/FastSimulation.vue';
 import VolumeAnalysis from './components/VolumeAnalysis.vue';
+import VolumeProfileAnalysis from './components/VolumeProfileAnalysis.vue';
 
 // 默认显示第一个 Tab
 const activeTab = ref('volume');
