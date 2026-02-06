@@ -13,7 +13,7 @@
         <label>置信上限 (Horizon): 
           <input type="number" v-model="horizon" class="n-input"/> 分钟
         </label>
-        <button @click="runVerify" :disabled="loading" class="btn-run">运行验证</button>
+        <el-button @click="runVerify" :loading="loading" class="btn-run">运行验证</el-button>
       </div>
     </div>
 

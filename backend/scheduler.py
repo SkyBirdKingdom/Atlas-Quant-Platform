@@ -200,7 +200,7 @@ def start_scheduler():
             replace_existing=True,
             misfire_grace_time=3600,
             max_instances=1,
-            next_run_time=now
+            next_run_time=now + timedelta(minutes=1),
         )
 
         scheduler.add_job(
@@ -211,7 +211,7 @@ def start_scheduler():
             replace_existing=True,
             misfire_grace_time=3600,
             max_instances=1,
-            next_run_time=now + timedelta(minutes=1),
+            next_run_time=now + timedelta(minutes=2),
         )
 
         scheduler.add_job(
@@ -222,7 +222,7 @@ def start_scheduler():
             replace_existing=True,
             misfire_grace_time=3600,
             max_instances=1,
-            next_run_time=now
+            next_run_time=now + timedelta(minutes=5),
         )
 
         # scheduler.add_job(

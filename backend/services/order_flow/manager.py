@@ -130,7 +130,7 @@ class OrderFlowManager:
         logger.info(f"[{area}] 📚 启动高并发归档: {curr.date()} -> {archive_limit.date()}")
         
         # 建议线程数：CPU核心数 * 2 或 4，或者固定 10 (网络IO密集型)
-        MAX_WORKERS = 10 
+        MAX_WORKERS = 2
 
         try:
             while curr < archive_limit:
